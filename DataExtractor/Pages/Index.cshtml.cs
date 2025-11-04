@@ -15,6 +15,7 @@ namespace DataExtractor.Pages
     public class IndexModel : PageModel
     {
         private readonly ILogger<IndexModel> _logger;
+        private const string BookingBaseUrl = "https://www.booking.com";
 
         public IndexModel(ILogger<IndexModel> logger)
         {
@@ -99,6 +100,10 @@ namespace DataExtractor.Pages
                               ?? doc.DocumentNode.SelectSingleNode("//div[contains(@class,'address')]")?.InnerText;
                     item.Location = CleanText(loc);
 
+                    var mapData = ExtractMapData(doc, item.Location);
+                    item.MapImageUrl = mapData.mapImageUrl;
+                    item.MapLink = mapData.mapLink;
+
                     items.Add(item);
                 }
                 catch (Exception ex)
@@ -128,6 +133,123 @@ namespace DataExtractor.Pages
             {
                 UrlEntries.Add(string.Empty);
             }
+        }
+
+        private (string? mapImageUrl, string? mapLink) ExtractMapData(HtmlDocument doc, string? locationText)
+        {
+            string? mapImage = null;
+            string? mapLink = null;
+            string? coordinateQuery = null;
+
+            static string BuildMapsLink(string query) =>
+                $"https://www.google.com/maps/search/?api=1&query={Uri.EscapeDataString(query)}";
+
+            var scriptMapLink = ExtractFromScripts(doc, "googleMapsUrl", "google_maps_url", "googleMapsLink", "google_map_link");
+            if (!string.IsNullOrWhiteSpace(scriptMapLink))
+                mapLink = NormalizeUrl(scriptMapLink);
+
+            var atlasNode = doc.DocumentNode.SelectSingleNode("//*[@data-atlas-latlng]");
+            var atlasCoords = atlasNode?.GetAttributeValue("data-atlas-latlng", null);
+            if (!string.IsNullOrWhiteSpace(atlasCoords) && atlasCoords.Contains(','))
+                coordinateQuery = CleanText(atlasCoords);
+
+            var atlasExplicitLink = NormalizeUrl(atlasNode?.GetAttributeValue("data-google-maps-url", null))
+                                     ?? NormalizeUrl(atlasNode?.GetAttributeValue("data-maps-url", null));
+            if (!string.IsNullOrWhiteSpace(atlasExplicitLink))
+                mapLink ??= atlasExplicitLink;
+
+            var anchorNode = doc.DocumentNode.SelectSingleNode("//a[contains(@data-atlas-latlng,'') or contains(@data-google-maps-url,'') or contains(@class,'show_map') or contains(@class,'js-map-link') or contains(@class,'map_link')]");
+            if (anchorNode != null)
+            {
+                var anchorLink = NormalizeUrl(anchorNode.GetAttributeValue("data-google-maps-url", null))
+                                 ?? NormalizeUrl(anchorNode.GetAttributeValue("href", null));
+                if (!string.IsNullOrWhiteSpace(anchorLink))
+                    mapLink ??= anchorLink;
+
+                if (string.IsNullOrWhiteSpace(coordinateQuery))
+                {
+                    var anchorCoords = anchorNode.GetAttributeValue("data-atlas-latlng", null);
+                    if (!string.IsNullOrWhiteSpace(anchorCoords) && anchorCoords.Contains(','))
+                        coordinateQuery = CleanText(anchorCoords);
+                }
+            }
+
+            var latMeta = CleanText(doc.DocumentNode.SelectSingleNode("//meta[@property='booking_com:location:latitude']")?.GetAttributeValue("content", null));
+            var lonMeta = CleanText(doc.DocumentNode.SelectSingleNode("//meta[@property='booking_com:location:longitude']")?.GetAttributeValue("content", null));
+            if (!string.IsNullOrWhiteSpace(latMeta) && !string.IsNullOrWhiteSpace(lonMeta))
+            {
+                coordinateQuery ??= $"{latMeta},{lonMeta}";
+            }
+
+            var mapImageNode = doc.DocumentNode.SelectSingleNode("//img[contains(@class,'map_static') or contains(@class,'map-image') or contains(@class,'map_static_image') or contains(@src,'static_map') or contains(@src,'maps.gstatic.com')]");
+            if (mapImageNode != null)
+            {
+                mapImage = NormalizeUrl(mapImageNode.GetAttributeValue("src", null), BookingBaseUrl)
+                           ?? NormalizeUrl(mapImageNode.GetAttributeValue("data-src", null), BookingBaseUrl)
+                           ?? NormalizeUrl(mapImageNode.GetAttributeValue("data-lazy-src", null), BookingBaseUrl);
+            }
+
+            if (string.IsNullOrWhiteSpace(mapImage))
+            {
+                var mapContainer = doc.DocumentNode.SelectSingleNode("//*[contains(@class,'map_static') or contains(@class,'map-container') or contains(@class,'map_static_image') or contains(@data-static-map-url,'http') or contains(@data-atlas-lazy-image,'http')]");
+                if (mapContainer != null)
+                {
+                    mapImage = NormalizeUrl(mapContainer.GetAttributeValue("data-static-map-url", null), BookingBaseUrl)
+                               ?? NormalizeUrl(mapContainer.GetAttributeValue("data-atlas-lazy-image", null), BookingBaseUrl)
+                               ?? NormalizeUrl(mapContainer.GetAttributeValue("data-lazy-url", null), BookingBaseUrl);
+
+                    if (string.IsNullOrWhiteSpace(mapImage))
+                    {
+                        var style = mapContainer.GetAttributeValue("style", null);
+                        if (!string.IsNullOrWhiteSpace(style))
+                        {
+                            var match = Regex.Match(style, @"url\\(['\"]?(?<url>[^'\")]+)['\"]?\\)");
+                            if (match.Success)
+                                mapImage = NormalizeUrl(match.Groups["url"].Value, BookingBaseUrl);
+                        }
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(mapImage))
+            {
+                var scriptMapImage = ExtractFromScripts(doc, "staticMapUrl", "static_map_url", "mapStaticImageUrl", "map_image_url", "staticMapImageUrl");
+                if (!string.IsNullOrWhiteSpace(scriptMapImage))
+                    mapImage = NormalizeUrl(scriptMapImage, BookingBaseUrl);
+            }
+
+            if (string.IsNullOrWhiteSpace(mapLink))
+            {
+                var scriptLinkFallback = ExtractFromScripts(doc, "googleMapsUrl", "google_maps_url", "googleMapsLink", "google_map_link", "mapsUrl");
+                if (!string.IsNullOrWhiteSpace(scriptLinkFallback))
+                    mapLink = NormalizeUrl(scriptLinkFallback);
+            }
+
+            if (!string.IsNullOrWhiteSpace(mapLink) && !mapLink.Contains("google.com/maps", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.IsNullOrWhiteSpace(coordinateQuery))
+                {
+                    mapLink = BuildMapsLink(coordinateQuery);
+                }
+                else if (!string.IsNullOrWhiteSpace(locationText))
+                {
+                    mapLink = BuildMapsLink(locationText);
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(mapLink))
+            {
+                if (!string.IsNullOrWhiteSpace(coordinateQuery))
+                {
+                    mapLink = BuildMapsLink(coordinateQuery);
+                }
+                else if (!string.IsNullOrWhiteSpace(locationText))
+                {
+                    mapLink = BuildMapsLink(locationText);
+                }
+            }
+
+            return (mapImage, mapLink);
         }
 
         private string? ExtractRating(HtmlDocument doc)
@@ -279,6 +401,8 @@ namespace DataExtractor.Pages
                     }
                 }
             }
+
+
             return null;
         }
 
@@ -393,12 +517,12 @@ namespace DataExtractor.Pages
             if (Regex.IsMatch(cleaned, "we price match", RegexOptions.IgnoreCase))
                 return null;
 
-
             cleaned = Regex.Replace(cleaned, "^(price|total|cost)[^\\d£€$]*", string.Empty, RegexOptions.IgnoreCase).Trim();
             cleaned = Regex.Replace(cleaned, "includes taxes and charges", string.Empty, RegexOptions.IgnoreCase).Trim();
 
             if (!Regex.IsMatch(cleaned, "\\d"))
                 return null;
+
             var currencyMatch = Regex.Match(
                 cleaned,
                 @"((?:£|€|$|¥|₩|₹|₽|₺|₪|฿|₫|₱)\s*[\d,.]+)|((?:AUD|CAD|CHF|DKK|EUR|GBP|NOK|NZD|PLN|RON|SEK|USD|AED|SAR|CNY|JPY|INR|KRW|SGD|HKD)\s*[\d,.]+)",
@@ -516,7 +640,6 @@ namespace DataExtractor.Pages
 
             return null;
         }
-
         private List<string> ExtractImages(HtmlDocument doc)
         {
             var results = new List<string>();
@@ -527,7 +650,11 @@ namespace DataExtractor.Pages
                 if (string.IsNullOrWhiteSpace(candidate))
                     return;
 
-                var cleaned = candidate.Trim();
+
+                var cleaned = NormalizeUrl(candidate, BookingBaseUrl);
+                if (string.IsNullOrWhiteSpace(cleaned))
+                    return;
+
                 if (seen.Add(cleaned))
                     results.Add(cleaned);
             }
@@ -575,6 +702,52 @@ namespace DataExtractor.Pages
             }
 
             return results;
+        }
+
+        private string? NormalizeUrl(string? input, string? baseHost = null)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return null;
+
+            var trimmed = input.Trim().Trim('\'', '"');
+            if (string.IsNullOrWhiteSpace(trimmed))
+                return null;
+
+            try
+            {
+                trimmed = HtmlEntity.DeEntitize(trimmed);
+            }
+            catch
+            {
+                // Ignore decoding issues and keep the trimmed value
+            }
+
+            trimmed = trimmed.Replace("\\/", "/").Replace("\\u0026", "&");
+
+            if (trimmed.StartsWith("//"))
+                return $"https:{trimmed}";
+
+            if (trimmed.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                return trimmed;
+
+            if (trimmed.StartsWith("/"))
+            {
+                if (!string.IsNullOrWhiteSpace(baseHost))
+                    return $"{baseHost.TrimEnd('/')}{trimmed}";
+
+                return trimmed;
+            }
+
+            if (!string.IsNullOrWhiteSpace(baseHost))
+            {
+                if (Uri.TryCreate(baseHost, UriKind.Absolute, out var baseUri)
+                    && Uri.TryCreate(baseUri, trimmed, out var absolute))
+                {
+                    return absolute.ToString();
+                }
+            }
+
+            return trimmed;
         }
 
         private string? CleanText(string? input)

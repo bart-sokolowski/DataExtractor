@@ -19,6 +19,15 @@ public class ExtractedListing
     public string? Location { get; set; }
 
     public string? Occupancy { get; set; }
+
+
+    public string? MapImageUrl { get; set; }
+
+    public string? MapLink { get; set; }
+
     [JsonIgnore]
     public bool HasImages => Images.Count > 0;
+
+    [JsonIgnore]
+    public bool HasMap => !string.IsNullOrWhiteSpace(MapImageUrl) || !string.IsNullOrWhiteSpace(MapLink);
 }
