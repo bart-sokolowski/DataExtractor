@@ -1,0 +1,23 @@
+using System.Text.Json.Serialization;
+
+namespace DataExtractor.Models;
+
+public class ExtractedListing
+{
+    public string Url { get; set; } = string.Empty;
+
+    public string? Title { get; set; }
+
+    public string? Description { get; set; }
+
+    public List<string> Images { get; set; } = new();
+
+    public string? Price { get; set; }
+
+    public string? Rating { get; set; }
+
+    public string? Location { get; set; }
+
+    [JsonIgnore]
+    public bool HasImages => Images.Count > 0;
+}
