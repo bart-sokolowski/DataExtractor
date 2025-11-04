@@ -5,23 +5,66 @@
 }
 
 <div class="row">
- <div class="col-md-8">
- <h2>Booking.com Extractor</h2>
- <form method="post">
- <div class="mb-3">
- <label for="Urls" class="form-label">Enter Booking.com URLs (one per line)</label>
- <textarea asp-for="Urls" class="form-control" rows="8" placeholder="https://www.booking.com/..."></textarea>
- <span asp-validation-for="Urls" class="text-danger"></span>
- </div>
- <button type="submit" class="btn btn-primary">Extract and Download PDF</button>
- </form>
- </div>
- <div class="col-md-4">
- <h4>Notes</h4>
- <p>This will fetch each provided Booking.com URL and attempt to extract the title, main image, price, rating and location, then produce a summary PDF.</p>
- </div>
+    <div class="col-md-8">
+        <h2>Booking.com Extractor</h2>
+        <form method="post" novalidate>
+            <div asp-validation-summary="ModelOnly" class="text-danger"></div>
+            <div id="urlInputs">
+                @for (var i = 0; i < Model.UrlEntries.Count; i++)
+                {
+                    <div class="mb-3 url-input">
+                        <label class="form-label" for="UrlEntries_@i">Booking.com URL @(i + 1)</label>
+                        <input asp-for="UrlEntries[i]" class="form-control" type="url" placeholder="https://www.booking.com/..." />
+                        <span asp-validation-for="UrlEntries[i]" class="text-danger"></span>
+                    </div>
+                }
+            </div>
+            <template id="urlInputTemplate">
+                <div class="mb-3 url-input">
+                    <label class="form-label" for="UrlEntries___index__">Booking.com URL __displayIndex__</label>
+                    <input class="form-control" type="url" id="UrlEntries___index__" name="UrlEntries[__index__]" placeholder="https://www.booking.com/..." />
+                    <span class="text-danger field-validation-valid" data-valmsg-for="UrlEntries[__index__]" data-valmsg-replace="true"></span>
+                </div>
+            </template>
+            <div class="d-flex flex-wrap gap-2">
+                <button type="button" class="btn btn-outline-secondary" id="addUrlBtn">Add another URL</button>
+                <button type="submit" class="btn btn-primary">Extract and View Results</button>
+            </div>
+        </form>
+    </div>
+    <div class="col-md-4">
+        <h4>Notes</h4>
+        <p>Enter one Booking.com link per field. Use the <strong>Add another URL</strong> button to include more listings. The extractor gathers the title, pricing details, number of guests, rating, location, and available images before showing everything on the results page.</p>
+    </div>
 </div>
 
 @section Scripts {
- <partial name="_ValidationScriptsPartial" />
+    <partial name="_ValidationScriptsPartial" />
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const container = document.getElementById('urlInputs');
+            const template = document.getElementById('urlInputTemplate');
+            const addButton = document.getElementById('addUrlBtn');
+
+            if (!container || !template || !addButton) {
+                return;
+            }
+
+            addButton.addEventListener('click', function () {
+                const index = container.querySelectorAll('.url-input').length;
+                const html = template.innerHTML
+                    .replace(/__index__/g, index)
+                    .replace(/__displayIndex__/g, index + 1);
+
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = html.trim();
+                const newField = wrapper.firstElementChild;
+                container.appendChild(newField);
+
+                if (window.jQuery && window.jQuery.validator && window.jQuery.validator.unobtrusive) {
+                    window.jQuery.validator.unobtrusive.parse(newField);
+                }
+            });
+        });
+    </script>
 }
