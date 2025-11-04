@@ -279,7 +279,6 @@ namespace DataExtractor.Pages
                     }
                 }
             }
-
             return null;
         }
 
@@ -394,12 +393,12 @@ namespace DataExtractor.Pages
             if (Regex.IsMatch(cleaned, "we price match", RegexOptions.IgnoreCase))
                 return null;
 
+
             cleaned = Regex.Replace(cleaned, "^(price|total|cost)[^\\d£€$]*", string.Empty, RegexOptions.IgnoreCase).Trim();
             cleaned = Regex.Replace(cleaned, "includes taxes and charges", string.Empty, RegexOptions.IgnoreCase).Trim();
 
             if (!Regex.IsMatch(cleaned, "\\d"))
                 return null;
-
             var currencyMatch = Regex.Match(
                 cleaned,
                 @"((?:£|€|$|¥|₩|₹|₽|₺|₪|฿|₫|₱)\s*[\d,.]+)|((?:AUD|CAD|CHF|DKK|EUR|GBP|NOK|NZD|PLN|RON|SEK|USD|AED|SAR|CNY|JPY|INR|KRW|SGD|HKD)\s*[\d,.]+)",

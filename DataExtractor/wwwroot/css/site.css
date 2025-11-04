@@ -29,3 +29,13 @@ body {
 .form-floating > .form-control-plaintext:focus::placeholder, .form-floating > .form-control:focus::placeholder {
   text-align: start;
 }
+
+.thumb-image {
+    width: 70px;
+    height: 70px;
+    object-fit: cover;
+}
+
+.object-fit-cover {
+    object-fit: cover;
+}
