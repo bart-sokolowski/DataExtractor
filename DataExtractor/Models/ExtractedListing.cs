@@ -20,6 +20,7 @@ public class ExtractedListing
 
     public string? Occupancy { get; set; }
 
+
     public string? MapImageUrl { get; set; }
 
     public string? MapLink { get; set; }

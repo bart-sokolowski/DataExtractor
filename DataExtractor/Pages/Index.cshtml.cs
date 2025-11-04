@@ -402,6 +402,7 @@ namespace DataExtractor.Pages
                 }
             }
 
+
             return null;
         }
 
@@ -639,7 +640,6 @@ namespace DataExtractor.Pages
 
             return null;
         }
-
         private List<string> ExtractImages(HtmlDocument doc)
         {
             var results = new List<string>();
@@ -649,6 +649,7 @@ namespace DataExtractor.Pages
             {
                 if (string.IsNullOrWhiteSpace(candidate))
                     return;
+
 
                 var cleaned = NormalizeUrl(candidate, BookingBaseUrl);
                 if (string.IsNullOrWhiteSpace(cleaned))
