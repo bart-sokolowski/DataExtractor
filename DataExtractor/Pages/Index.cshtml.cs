@@ -56,7 +56,14 @@ namespace DataExtractor.Pages
             {
                 try
                 {
-                    var html = await http.GetStringAsync(url);
+                    using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                    request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+                    request.Headers.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
+                    request.Headers.TryAddWithoutValidation("Accept-Language", "en-GB,en;q=0.9");
+
+                    using var response = await http.SendAsync(request);
+                    response.EnsureSuccessStatusCode();
+                    var html = await response.Content.ReadAsStringAsync();
                     var doc = new HtmlDocument();
                     doc.LoadHtml(html);
 
@@ -181,6 +188,9 @@ namespace DataExtractor.Pages
         {
             var priceSelectors = new[]
             {
+                "//*[@id='group_recommendation']//div[contains(@class,'prco-text-nowrap-helper')]//div[contains(@class,'prco-inline-block-maker-helper')]//span",
+                "//*[@id='group_recommendation']//div[contains(@class,'prco-text-nowrap-helper')]//span[contains(@class,'prco-valign-middle-helper')]",
+                "//*[@id='group_recommendation']//div[contains(@class,'prco-text-nowrap-helper')]//span",
                 "//*[@id='group_recommendation']//td[contains(@class,'totalPrice-container')]//span[contains(@class,'prco-valign-middle-helper')]",
                 "//*[@id='group_recommendation']//td[contains(@class,'totalPrice-container')]//div[contains(@class,'bui-price-display__value')]//span",
                 "//*[@id='group_recommendation']//td[contains(@class,'totalPrice-container')]//div[contains(@class,'bui-price-display__value')]",
@@ -383,13 +393,31 @@ namespace DataExtractor.Pages
             if (Regex.IsMatch(cleaned, "we price match", RegexOptions.IgnoreCase))
                 return null;
 
-            cleaned = Regex.Replace(cleaned, "^(price|total|cost)[:\\s-]*", string.Empty, RegexOptions.IgnoreCase).Trim();
+
+            cleaned = Regex.Replace(cleaned, "^(price|total|cost)[^\\d£€$]*", string.Empty, RegexOptions.IgnoreCase).Trim();
             cleaned = Regex.Replace(cleaned, "includes taxes and charges", string.Empty, RegexOptions.IgnoreCase).Trim();
 
             if (!Regex.IsMatch(cleaned, "\\d"))
                 return null;
+            var currencyMatch = Regex.Match(
+                cleaned,
+                @"((?:£|€|$|¥|₩|₹|₽|₺|₪|฿|₫|₱)\s*[\d,.]+)|((?:AUD|CAD|CHF|DKK|EUR|GBP|NOK|NZD|PLN|RON|SEK|USD|AED|SAR|CNY|JPY|INR|KRW|SGD|HKD)\s*[\d,.]+)",
+                RegexOptions.IgnoreCase);
+            if (currencyMatch.Success)
+            {
+                var result = CleanText(currencyMatch.Value);
+                if (!string.IsNullOrWhiteSpace(result))
+                    return result;
+            }
 
-            return cleaned;
+            if (Regex.IsMatch(cleaned, "(night|adult|guest|person|people|room)", RegexOptions.IgnoreCase))
+                return null;
+
+            var numericMatch = Regex.Match(cleaned, "\\d[\\d,.\\s]*");
+            if (numericMatch.Success)
+                return CleanText(numericMatch.Value);
+
+            return null;
         }
 
         private string? NormalizeOccupancyText(string? value)
