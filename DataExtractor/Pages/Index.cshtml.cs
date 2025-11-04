@@ -20,20 +20,33 @@ namespace DataExtractor.Pages
         }
 
         [BindProperty]
-        public string? Urls { get; set; }
+        public List<string> UrlEntries { get; set; } = new();
+
+        [TempData]
+        public string? ExtractedItemsJson { get; set; }
 
         [TempData]
         public string? ExtractedItemsJson { get; set; }
 
         public void OnGet()
         {
+            EnsureUrlInputs();
         }
 
         public async Task<IActionResult> OnPostAsync()
         {
-            if (string.IsNullOrWhiteSpace(Urls))
+            UrlEntries = UrlEntries?
+                .Select(u => u?.Trim() ?? string.Empty)
+                .ToList() ?? new List<string>();
+
+            var urlList = UrlEntries
+                .Where(u => !string.IsNullOrWhiteSpace(u))
+                .ToList();
+
+            if (!urlList.Any())
             {
                 ModelState.AddModelError(string.Empty, "Please provide at least one URL.");
+                EnsureUrlInputs();
                 return Page();
             }
 
@@ -76,6 +89,9 @@ namespace DataExtractor.Pages
                     // Price
                     item.Price = ExtractPrice(doc);
 
+                    // Occupancy / number of people
+                    item.Occupancy = ExtractOccupancy(doc);
+
                     // Location/address
                     var loc = doc.DocumentNode.SelectSingleNode("//span[@data-testid='address']")?.InnerText
                               ?? doc.DocumentNode.SelectSingleNode("//span[contains(@class,'hp_address_subtitle')]")?.InnerText
@@ -98,6 +114,19 @@ namespace DataExtractor.Pages
 
             ExtractedItemsJson = JsonSerializer.Serialize(items);
             return RedirectToPage("Results");
+        }
+
+        private void EnsureUrlInputs()
+        {
+            if (UrlEntries == null)
+            {
+                UrlEntries = new List<string>();
+            }
+
+            if (UrlEntries.Count == 0)
+            {
+                UrlEntries.Add(string.Empty);
+            }
         }
 
         private string? ExtractRating(HtmlDocument doc)
@@ -165,6 +194,13 @@ namespace DataExtractor.Pages
                 "//span[@data-testid='total-price-value']",
                 "//div[@data-testid='price-summary']//span",
                 "//span[@data-testid='price-summary']",
+                "//div[@data-testid='price-summary']",
+                "//div[@data-testid='availability-cta']//*[contains(@class,'price')]",
+                "//span[@data-testid='property-price']",
+                "//div[@data-testid='property-price']",
+                "//div[contains(@class,'hp__hotel-prices')]/span",
+                "//div[contains(@class,'hotel_price_block_wrapper')]//strong",
+                "//div[contains(@class,'bui-price-display__value')]//span",
                 "//div[contains(@class,'prco-valign-center-helper')]",
                 "//span[contains(@class,'prco-inline-block-maker-helper')]",
                 "//span[contains(@class,'bui-price-display__value')]",
@@ -192,6 +228,157 @@ namespace DataExtractor.Pages
                 if (!string.IsNullOrWhiteSpace(currency))
                     return $"{metaPrice} {currency}";
                 return metaPrice;
+            }
+
+            var scriptPrice = ExtractFromScripts(doc, "priceDisplayable", "displayPrice", "priceDisplayValue", "display_price", "priceString");
+            if (!string.IsNullOrWhiteSpace(scriptPrice))
+                return scriptPrice;
+
+            var scriptNodes = doc.DocumentNode.SelectNodes("//script");
+            if (scriptNodes != null)
+            {
+                var amountPattern = new Regex("\"price\"\\s*:\\s*\\{[^}]*\"amount\"\\s*:\\s*(?<amount>[0-9]+(?:\\.[0-9]+)?)\\s*,[^}]*\"currency\"\\s*:\\s*\"(?<currency>[^\"]+)\"", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+                foreach (var script in scriptNodes)
+                {
+                    var text = script.InnerText;
+                    if (string.IsNullOrWhiteSpace(text))
+                        continue;
+
+                    var match = amountPattern.Match(text);
+                    if (match.Success)
+                    {
+                        var amount = match.Groups["amount"].Value;
+                        var currency = match.Groups["currency"].Value;
+                        var combined = CleanText($"{amount} {currency}");
+                        if (!string.IsNullOrWhiteSpace(combined))
+                            return combined;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private string? ExtractOccupancy(HtmlDocument doc)
+        {
+            var occupancySelectors = new[]
+            {
+                "//div[@data-testid='occupancy-config']",
+                "//span[@data-testid='occupancy-config']",
+                "//div[@data-testid='max-people-message']",
+                "//div[contains(@class,'occupancy-message')]",
+                "//span[contains(@class,'occupancy-message')]",
+                "//div[contains(@class,'c-occupancy-icons__text')]",
+                "//span[contains(@class,'c-occupancy-icons__text')]",
+                "//div[contains(@class,'room-config__occupancy')]",
+                "//span[contains(@class,'room-config__occupancy')]"
+            };
+
+            foreach (var selector in occupancySelectors)
+            {
+                var node = doc.DocumentNode.SelectSingleNode(selector);
+                var value = CleanText(node?.InnerText);
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    var normalized = value.ToLowerInvariant();
+                    if (normalized.Contains("sleep") || normalized.Contains("guest"))
+                        return value;
+                }
+            }
+
+            var keywordSelectors = new[]
+            {
+                "//span[contains(text(),'Sleeps')]",
+                "//div[contains(text(),'Sleeps')]",
+                "//li[contains(text(),'Sleeps')]",
+                "//span[contains(text(),'guests')]",
+                "//div[contains(text(),'guests')]",
+                "//li[contains(text(),'guests')]"
+            };
+
+            foreach (var selector in keywordSelectors)
+            {
+                var nodes = doc.DocumentNode.SelectNodes(selector);
+                if (nodes == null)
+                    continue;
+
+                foreach (var node in nodes)
+                {
+                    var value = CleanText(node?.InnerText);
+                    if (string.IsNullOrWhiteSpace(value))
+                        continue;
+
+                    var normalized = value.ToLowerInvariant();
+                    if (normalized.Contains("sleep") || normalized.Contains("guest"))
+                        return value;
+                }
+            }
+
+            var scriptOccupancy = ExtractFromScripts(doc, "occupancyText", "occupancyDisplayValue", "occupancySummary", "maxOccupancy");
+            if (!string.IsNullOrWhiteSpace(scriptOccupancy))
+            {
+                if (int.TryParse(scriptOccupancy, out var count) && count > 0)
+                    return count == 1 ? "Sleeps 1" : $"Sleeps {count}";
+
+                return scriptOccupancy;
+            }
+
+            var scriptNodes = doc.DocumentNode.SelectNodes("//script");
+            if (scriptNodes != null)
+            {
+                var occupancyPattern = new Regex("\"adults\"\\s*:\\s*(?<adults>\\d+)(?:[^\\d]+\"children\"\\s*:\\s*(?<children>\\d+))?", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+                foreach (var script in scriptNodes)
+                {
+                    var text = script.InnerText;
+                    if (string.IsNullOrWhiteSpace(text))
+                        continue;
+
+                    var match = occupancyPattern.Match(text);
+                    if (match.Success)
+                    {
+                        var adults = int.Parse(match.Groups["adults"].Value);
+                        var childrenGroup = match.Groups["children"];
+                        var children = 0;
+                        if (childrenGroup.Success && int.TryParse(childrenGroup.Value, out var parsedChildren))
+                            children = parsedChildren;
+
+                        var total = adults + children;
+                        if (total > 0)
+                            return total == 1 ? "Sleeps 1" : $"Sleeps {total}";
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private string? ExtractFromScripts(HtmlDocument doc, params string[] keys)
+        {
+            if (keys == null || keys.Length == 0)
+                return null;
+
+            var scriptNodes = doc.DocumentNode.SelectNodes("//script");
+            if (scriptNodes == null)
+                return null;
+
+            foreach (var script in scriptNodes)
+            {
+                var content = script.InnerText;
+                if (string.IsNullOrWhiteSpace(content))
+                    continue;
+
+                foreach (var key in keys)
+                {
+                    var pattern = $"\\\"{Regex.Escape(key)}\\\"\\s*:\\s*\\\"(?<value>.*?)\\\"";
+                    var match = Regex.Match(content, pattern, RegexOptions.IgnoreCase | RegexOptions.Singleline);
+                    if (match.Success)
+                    {
+                        var raw = Regex.Unescape(match.Groups["value"].Value);
+                        var cleaned = CleanText(raw);
+                        if (!string.IsNullOrWhiteSpace(cleaned))
+                            return cleaned;
+                    }
+                }
             }
 
             return null;

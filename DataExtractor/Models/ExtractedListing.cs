@@ -18,6 +18,7 @@ public class ExtractedListing
 
     public string? Location { get; set; }
 
+    public string? Occupancy { get; set; }
     [JsonIgnore]
     public bool HasImages => Images.Count > 0;
 }
