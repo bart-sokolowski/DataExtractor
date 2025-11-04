@@ -2,6 +2,8 @@ using DataExtractor.Models;
 using HtmlAgilityPack;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.AspNetCore.WebUtilities;
+using System;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -21,9 +23,6 @@ namespace DataExtractor.Pages
 
         [BindProperty]
         public List<string> UrlEntries { get; set; } = new();
-
-        [TempData]
-        public string? ExtractedItemsJson { get; set; }
 
         [TempData]
         public string? ExtractedItemsJson { get; set; }
@@ -49,11 +48,6 @@ namespace DataExtractor.Pages
                 EnsureUrlInputs();
                 return Page();
             }
-
-            var urlList = Urls.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(u => u.Trim())
-                .Where(u => !string.IsNullOrWhiteSpace(u))
-                .ToList();
 
             var items = new List<ExtractedListing>();
 
@@ -90,7 +84,8 @@ namespace DataExtractor.Pages
                     item.Price = ExtractPrice(doc);
 
                     // Occupancy / number of people
-                    item.Occupancy = ExtractOccupancy(doc);
+                    item.Occupancy = ExtractOccupancy(doc, url);
+
 
                     // Location/address
                     var loc = doc.DocumentNode.SelectSingleNode("//span[@data-testid='address']")?.InnerText
@@ -206,19 +201,32 @@ namespace DataExtractor.Pages
                 "//span[contains(@class,'bui-price-display__value')]",
                 "//div[contains(@class,'bui-price-display__value')]",
                 "//span[contains(@class,'price')]",
-                "//div[contains(@class,'price')]"
+                "//div[contains(@class,'price')]",
+                "//td[contains(@class,'totalPrice')]//div[contains(@class,'bui-price-display__value')]//span",
+                "//td[contains(@class,'totalPrice')]//div[contains(@class,'prco-valign-middle-helper')]",
+                "//td[contains(@class,'totalPrice')]//span[contains(@class,'prco-inline-block-maker-helper')]"
             };
 
             foreach (var selector in priceSelectors)
             {
-                var node = doc.DocumentNode.SelectSingleNode(selector);
-                var value = CleanText(node?.InnerText);
-                if (!string.IsNullOrWhiteSpace(value))
-                    return value;
+                var nodes = doc.DocumentNode.SelectNodes(selector);
+                if (nodes == null)
+                    continue;
 
-                var ariaValue = CleanText(node?.GetAttributeValue("aria-label", null));
-                if (!string.IsNullOrWhiteSpace(ariaValue))
-                    return ariaValue;
+                foreach (var node in nodes)
+                {
+                    var value = NormalizePriceText(node?.InnerText);
+                    if (!string.IsNullOrWhiteSpace(value))
+                        return value;
+
+                    var ariaValue = NormalizePriceText(node?.GetAttributeValue("aria-label", null));
+                    if (!string.IsNullOrWhiteSpace(ariaValue))
+                        return ariaValue;
+
+                    var dataPrice = NormalizePriceText(node?.GetAttributeValue("data-price", null));
+                    if (!string.IsNullOrWhiteSpace(dataPrice))
+                        return dataPrice;
+                }
             }
 
             var metaPrice = CleanText(doc.DocumentNode.SelectSingleNode("//meta[@property='product:price:amount']")?.GetAttributeValue("content", null));
@@ -231,8 +239,9 @@ namespace DataExtractor.Pages
             }
 
             var scriptPrice = ExtractFromScripts(doc, "priceDisplayable", "displayPrice", "priceDisplayValue", "display_price", "priceString");
-            if (!string.IsNullOrWhiteSpace(scriptPrice))
-                return scriptPrice;
+            var normalizedScriptPrice = NormalizePriceText(scriptPrice);
+            if (!string.IsNullOrWhiteSpace(normalizedScriptPrice))
+                return normalizedScriptPrice;
 
             var scriptNodes = doc.DocumentNode.SelectNodes("//script");
             if (scriptNodes != null)
@@ -249,17 +258,16 @@ namespace DataExtractor.Pages
                     {
                         var amount = match.Groups["amount"].Value;
                         var currency = match.Groups["currency"].Value;
-                        var combined = CleanText($"{amount} {currency}");
+                        var combined = NormalizePriceText($"{amount} {currency}");
                         if (!string.IsNullOrWhiteSpace(combined))
                             return combined;
                     }
                 }
             }
-
             return null;
         }
 
-        private string? ExtractOccupancy(HtmlDocument doc)
+        private string? ExtractOccupancy(HtmlDocument doc, string sourceUrl)
         {
             var occupancySelectors = new[]
             {
@@ -271,17 +279,20 @@ namespace DataExtractor.Pages
                 "//div[contains(@class,'c-occupancy-icons__text')]",
                 "//span[contains(@class,'c-occupancy-icons__text')]",
                 "//div[contains(@class,'room-config__occupancy')]",
-                "//span[contains(@class,'room-config__occupancy')]"
+                "//span[contains(@class,'room-config__occupancy')]",
+                "//td[contains(@class,'totalPrice')]//div[contains(@class,'bui-price-display__label')]"
             };
 
             foreach (var selector in occupancySelectors)
             {
-                var node = doc.DocumentNode.SelectSingleNode(selector);
-                var value = CleanText(node?.InnerText);
-                if (!string.IsNullOrWhiteSpace(value))
+                var nodes = doc.DocumentNode.SelectNodes(selector);
+                if (nodes == null)
+                    continue;
+
+                foreach (var node in nodes)
                 {
-                    var normalized = value.ToLowerInvariant();
-                    if (normalized.Contains("sleep") || normalized.Contains("guest"))
+                    var value = NormalizeOccupancyText(node?.InnerText);
+                    if (!string.IsNullOrWhiteSpace(value))
                         return value;
                 }
             }
@@ -304,12 +315,8 @@ namespace DataExtractor.Pages
 
                 foreach (var node in nodes)
                 {
-                    var value = CleanText(node?.InnerText);
-                    if (string.IsNullOrWhiteSpace(value))
-                        continue;
-
-                    var normalized = value.ToLowerInvariant();
-                    if (normalized.Contains("sleep") || normalized.Contains("guest"))
+                    var value = NormalizeOccupancyText(node?.InnerText);
+                    if (!string.IsNullOrWhiteSpace(value))
                         return value;
                 }
             }
@@ -320,7 +327,9 @@ namespace DataExtractor.Pages
                 if (int.TryParse(scriptOccupancy, out var count) && count > 0)
                     return count == 1 ? "Sleeps 1" : $"Sleeps {count}";
 
-                return scriptOccupancy;
+                var normalizedScript = NormalizeOccupancyText(scriptOccupancy);
+                if (!string.IsNullOrWhiteSpace(normalizedScript))
+                    return normalizedScript;
             }
 
             var scriptNodes = doc.DocumentNode.SelectNodes("//script");
@@ -349,7 +358,97 @@ namespace DataExtractor.Pages
                 }
             }
 
+            var occupancyFromUrl = ExtractOccupancyFromUrl(sourceUrl);
+            if (!string.IsNullOrWhiteSpace(occupancyFromUrl))
+                return occupancyFromUrl;
+
             return null;
+        }
+
+        private string? NormalizePriceText(string? value)
+        {
+            var cleaned = CleanText(value);
+            if (string.IsNullOrWhiteSpace(cleaned))
+                return null;
+
+            if (!Regex.IsMatch(cleaned, "\\d"))
+                return null;
+
+            if (Regex.IsMatch(cleaned, "we price match", RegexOptions.IgnoreCase))
+                return null;
+
+            cleaned = Regex.Replace(cleaned, "^(price|total|cost)[:\\s-]*", string.Empty, RegexOptions.IgnoreCase).Trim();
+            cleaned = Regex.Replace(cleaned, "includes taxes and charges", string.Empty, RegexOptions.IgnoreCase).Trim();
+
+            if (!Regex.IsMatch(cleaned, "\\d"))
+                return null;
+
+            return cleaned;
+        }
+
+        private string? NormalizeOccupancyText(string? value)
+        {
+            var cleaned = CleanText(value);
+            if (string.IsNullOrWhiteSpace(cleaned))
+                return null;
+
+            if (!Regex.IsMatch(cleaned, "\\d"))
+                return null;
+
+            if (Regex.IsMatch(cleaned, "facilities", RegexOptions.IgnoreCase))
+                return null;
+
+            var normalized = cleaned.ToLowerInvariant();
+            if (!(normalized.Contains("night") || normalized.Contains("guest") || normalized.Contains("adult") || normalized.Contains("person") || normalized.Contains("people") || normalized.Contains("sleep")))
+                return null;
+
+            return cleaned;
+        }
+
+        private string? ExtractOccupancyFromUrl(string sourceUrl)
+        {
+            if (!Uri.TryCreate(sourceUrl, UriKind.Absolute, out var uri))
+                return null;
+
+            var query = QueryHelpers.ParseQuery(uri.Query);
+
+            int ParseCount(string key)
+            {
+                if (query.TryGetValue(key, out var value) && int.TryParse(value, out var parsed) && parsed > 0)
+                    return parsed;
+                return 0;
+            }
+
+            var adults = ParseCount("group_adults");
+            var children = ParseCount("group_children");
+            var rooms = ParseCount("no_rooms");
+
+            int nights = 0;
+            if (query.TryGetValue("checkin", out var checkinValue) && query.TryGetValue("checkout", out var checkoutValue))
+            {
+                if (DateTime.TryParse(checkinValue, out var checkin) && DateTime.TryParse(checkoutValue, out var checkout) && checkout > checkin)
+                {
+                    nights = (int)(checkout - checkin).TotalDays;
+                }
+            }
+
+            var parts = new List<string>();
+            if (nights > 0)
+                parts.Add(nights == 1 ? "1 night" : $"{nights} nights");
+
+            if (adults > 0)
+                parts.Add(adults == 1 ? "1 adult" : $"{adults} adults");
+
+            if (children > 0)
+                parts.Add(children == 1 ? "1 child" : $"{children} children");
+
+            if (rooms > 0)
+                parts.Add(rooms == 1 ? "1 room" : $"{rooms} rooms");
+
+            if (parts.Count == 0)
+                return null;
+
+            return string.Join(", ", parts);
         }
 
         private string? ExtractFromScripts(HtmlDocument doc, params string[] keys)
