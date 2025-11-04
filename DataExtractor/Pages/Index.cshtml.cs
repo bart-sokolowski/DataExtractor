@@ -254,9 +254,9 @@ namespace DataExtractor.Pages
 
                             info.Item().Text(text =>
                             {
-                                text.Span("Source: ").SemiBold();
-                                text.Span(item.Url).FontColor(Colors.Blue.Medium);
-                            }).FontSize(9);
+                                text.Span("Source: ").SemiBold().FontSize(9);
+                                text.Span(item.Url).FontColor(Colors.Blue.Medium).FontSize(9);
+                            });
                         });
 
                         if (item.Images.Count > 0)
