@@ -25,6 +25,9 @@ namespace DataExtractor.Pages
         [TempData]
         public string? ExtractedItemsJson { get; set; }
 
+        [TempData]
+        public string? ExtractedItemsJson { get; set; }
+
         public void OnGet()
         {
             EnsureUrlInputs();
@@ -46,6 +49,11 @@ namespace DataExtractor.Pages
                 EnsureUrlInputs();
                 return Page();
             }
+
+            var urlList = Urls.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(u => u.Trim())
+                .Where(u => !string.IsNullOrWhiteSpace(u))
+                .ToList();
 
             var items = new List<ExtractedListing>();
 
