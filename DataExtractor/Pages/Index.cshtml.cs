@@ -86,7 +86,6 @@ namespace DataExtractor.Pages
                     // Occupancy / number of people
                     item.Occupancy = ExtractOccupancy(doc, url);
 
-
                     // Location/address
                     var loc = doc.DocumentNode.SelectSingleNode("//span[@data-testid='address']")?.InnerText
                               ?? doc.DocumentNode.SelectSingleNode("//span[contains(@class,'hp_address_subtitle')]")?.InnerText
@@ -182,6 +181,12 @@ namespace DataExtractor.Pages
         {
             var priceSelectors = new[]
             {
+                "//*[@id='group_recommendation']//td[contains(@class,'totalPrice-container')]//span[contains(@class,'prco-valign-middle-helper')]",
+                "//*[@id='group_recommendation']//td[contains(@class,'totalPrice-container')]//div[contains(@class,'bui-price-display__value')]//span",
+                "//*[@id='group_recommendation']//td[contains(@class,'totalPrice-container')]//div[contains(@class,'bui-price-display__value')]",
+                "//td[contains(@class,'totalPrice-container')]//span[contains(@class,'prco-valign-middle-helper')]",
+                "//td[contains(@class,'totalPrice-container')]//div[contains(@class,'bui-price-display__value')]//span",
+                "//td[contains(@class,'totalPrice-container')]//div[contains(@class,'bui-price-display__value')]",
                 "//span[@data-testid='price-and-discounted-price']",
                 "//div[@data-testid='price-and-discounted-price']",
                 "//span[@data-testid='price-for-x-nights']",
@@ -280,7 +285,8 @@ namespace DataExtractor.Pages
                 "//span[contains(@class,'c-occupancy-icons__text')]",
                 "//div[contains(@class,'room-config__occupancy')]",
                 "//span[contains(@class,'room-config__occupancy')]",
-                "//td[contains(@class,'totalPrice')]//div[contains(@class,'bui-price-display__label')]"
+                "//td[contains(@class,'totalPrice')]//div[contains(@class,'bui-price-display__label')]",
+                "//td[contains(@class,'totalPrice-container')]//div[contains(@class,'bui-price-display__label')]"
             };
 
             foreach (var selector in occupancySelectors)
