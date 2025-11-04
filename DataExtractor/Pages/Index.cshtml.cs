@@ -1,7 +1,9 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using HtmlAgilityPack;
-using System.Text;
+using System.Net.Http;
+using System.Text.RegularExpressions;
+using System.Linq;
 using QuestPDF.Fluent;
 using QuestPDF.Helpers;
 using QuestPDF.Infrastructure;
@@ -10,6 +12,8 @@ namespace DataExtractor.Pages
 {
     public class IndexModel : PageModel
     {
+        private static readonly HttpClient ImageHttpClient = new();
+
         private readonly ILogger<IndexModel> _logger;
 
         public IndexModel(ILogger<IndexModel> logger)
@@ -53,12 +57,14 @@ namespace DataExtractor.Pages
 
                     // Title: try og:title then title tag
                     var ogTitle = doc.DocumentNode.SelectSingleNode("//meta[@property='og:title']")?.GetAttributeValue("content", null);
-                    if (!string.IsNullOrWhiteSpace(ogTitle)) item.Title = ogTitle.Trim();
-                    else item.Title = doc.DocumentNode.SelectSingleNode("//title")?.InnerText?.Trim() ?? "";
+                    if (!string.IsNullOrWhiteSpace(ogTitle)) item.Title = CleanText(ogTitle);
+                    else item.Title = CleanText(doc.DocumentNode.SelectSingleNode("//title")?.InnerText) ?? string.Empty;
 
                     // Description
-                    var desc = doc.DocumentNode.SelectSingleNode("//meta[@name='description']")?.GetAttributeValue("content", null);
-                    if (!string.IsNullOrWhiteSpace(desc)) item.Description = desc.Trim();
+                    var desc = doc.DocumentNode.SelectSingleNode("//meta[@name='description']")?.GetAttributeValue("content", null)
+                               ?? doc.DocumentNode.SelectSingleNode("//div[@data-testid='property-description']//p")?.InnerText
+                               ?? doc.DocumentNode.SelectSingleNode("//div[contains(@class,'hotel_desc')]")?.InnerText;
+                    item.Description = CleanText(desc);
 
                     // Image: og:image
                     var ogImage = doc.DocumentNode.SelectSingleNode("//meta[@property='og:image']")?.GetAttributeValue("content", null);
@@ -74,31 +80,16 @@ namespace DataExtractor.Pages
                     }
 
                     // Rating: try common selectors
-                    var rating = doc.DocumentNode.SelectSingleNode("//div[contains(@class,'b5cd09854e')]")?.InnerText
-                                 ?? doc.DocumentNode.SelectSingleNode("//span[@aria-label and contains(.,'score')]")?.InnerText;
-                    if (!string.IsNullOrWhiteSpace(rating)) item.Rating = HtmlEntity.DeEntitize(rating).Trim();
-                    else
-                    {
-                        var metaRating = doc.DocumentNode.SelectSingleNode("//meta[@itemprop='ratingValue']")?.GetAttributeValue("content", null);
-                        if (!string.IsNullOrWhiteSpace(metaRating)) item.Rating = metaRating.Trim();
-                    }
+                    item.Rating = ExtractRating(doc);
 
                     // Price: try price display class or meta
-                    var priceNode = doc.DocumentNode.SelectSingleNode("//span[contains(@class,'bui-price-display__value')]")
-                                      ?? doc.DocumentNode.SelectSingleNode("//div[contains(@class,'price')]")
-                                      ?? doc.DocumentNode.SelectSingleNode("//span[contains(@class,'price')]");
-                    if (priceNode != null) item.Price = HtmlEntity.DeEntitize(priceNode.InnerText).Trim();
-                    else
-                    {
-                        var metaPrice = doc.DocumentNode.SelectSingleNode("//meta[@property='product:price:amount']")?.GetAttributeValue("content", null);
-                        if (!string.IsNullOrWhiteSpace(metaPrice)) item.Price = metaPrice.Trim();
-                    }
+                    item.Price = ExtractPrice(doc);
 
                     // Location/address
                     var loc = doc.DocumentNode.SelectSingleNode("//span[@data-testid='address']")?.InnerText
                               ?? doc.DocumentNode.SelectSingleNode("//span[contains(@class,'hp_address_subtitle')] ")?.InnerText
                               ?? doc.DocumentNode.SelectSingleNode("//div[contains(@class,'address')]")?.InnerText;
-                    if (!string.IsNullOrWhiteSpace(loc)) item.Location = HtmlEntity.DeEntitize(loc).Trim();
+                    item.Location = CleanText(loc);
 
                     items.Add(item);
                 }
@@ -196,21 +187,21 @@ namespace DataExtractor.Pages
         private void RenderItem(IContainer container, ExtractedItem item)
         {
             container
-                .Padding(12)
+                .Padding(16)
                 .Border(1)
-                .BorderColor(Colors.Grey.Lighten2)
-                .Background(Colors.Grey.Lighten5)
+                .BorderColor(Colors.Grey.Lighten3)
+                .Background(Colors.White)
                 .Column(col =>
                 {
-                    col.Spacing(8);
+                    col.Spacing(10);
 
                     col.Item().Row(row =>
                     {
                         row.RelativeColumn().Column(info =>
                         {
-                            info.Spacing(4);
+                            info.Spacing(6);
 
-                            info.Item().Text(item.Title ?? "").SemiBold().FontSize(15);
+                            info.Item().Text(item.Title ?? "").SemiBold().FontSize(16);
 
                             if (!string.IsNullOrWhiteSpace(item.Location))
                             {
@@ -218,31 +209,39 @@ namespace DataExtractor.Pages
                                 {
                                     text.Span("Location: ").SemiBold();
                                     text.Span(item.Location);
-                                }).FontSize(10).FontColor(Colors.Grey.Darken1);
+                                }).FontSize(11).FontColor(Colors.Grey.Darken1);
                             }
 
                             if (!string.IsNullOrWhiteSpace(item.Price) || !string.IsNullOrWhiteSpace(item.Rating))
                             {
-                                info.Item().Grid(grid =>
+                                info.Item().Row(tags =>
                                 {
-                                    grid.Columns(2);
+                                    tags.Spacing(10);
 
                                     if (!string.IsNullOrWhiteSpace(item.Price))
                                     {
-                                        grid.Item().Text(text =>
-                                        {
-                                            text.Span("Price\n").SemiBold();
-                                            text.Span(item.Price);
-                                        }).FontSize(11);
+                                        tags.AutoItem().PaddingVertical(6).PaddingHorizontal(10)
+                                            .Border(1)
+                                            .BorderColor(Colors.Green.Darken1.WithAlpha(0.3f))
+                                            .Background(Colors.Green.Lighten4)
+                                            .Text(text =>
+                                            {
+                                                text.Span("Price: ").SemiBold();
+                                                text.Span(item.Price);
+                                            }).FontSize(11);
                                     }
 
                                     if (!string.IsNullOrWhiteSpace(item.Rating))
                                     {
-                                        grid.Item().Text(text =>
-                                        {
-                                            text.Span("Rating\n").SemiBold();
-                                            text.Span(item.Rating);
-                                        }).FontSize(11);
+                                        tags.AutoItem().PaddingVertical(6).PaddingHorizontal(10)
+                                            .Border(1)
+                                            .BorderColor(Colors.Blue.Darken1.WithAlpha(0.3f))
+                                            .Background(Colors.Blue.Lighten4)
+                                            .Text(text =>
+                                            {
+                                                text.Span("Rating: ").SemiBold();
+                                                text.Span(item.Rating);
+                                            }).FontSize(11);
                                     }
                                 });
                             }
@@ -264,19 +263,156 @@ namespace DataExtractor.Pages
                             var imgUrl = item.Images[0];
                             try
                             {
-                                using var http = new HttpClient();
-                                var bytes = http.GetByteArrayAsync(imgUrl).GetAwaiter().GetResult();
-                                row.ConstantColumn(120).Height(90).Image(bytes).FitArea();
+                                var bytes = ImageHttpClient.GetByteArrayAsync(imgUrl).GetAwaiter().GetResult();
+                                row.ConstantColumn(140).Height(100).Image(bytes).FitArea();
                             }
                             catch (Exception imgEx)
                             {
                                 // if image loading fails, log and render placeholder
                                 _logger.LogDebug(imgEx, "Failed to load image {ImageUrl}", imgUrl);
-                                row.ConstantColumn(120).Height(90).Placeholder();
+                                row.ConstantColumn(140).Height(100).Placeholder();
                             }
                         }
+                        else
+                        {
+                            row.ConstantColumn(140).Height(100).Placeholder();
+                        }
                     });
+
+                    col.Item().PaddingTop(8).LineHorizontal(1).LineColor(Colors.Grey.Lighten3);
                 });
+        }
+
+        private string? ExtractRating(HtmlDocument doc)
+        {
+            var ratingScore = CleanText(doc.DocumentNode
+                .SelectSingleNode("//div[@data-testid='review-score-right-component']//div[1]")?.InnerText);
+            var ratingLabel = CleanText(doc.DocumentNode
+                .SelectSingleNode("//div[@data-testid='review-score-right-component']//div[2]")?.InnerText);
+
+            if (!string.IsNullOrWhiteSpace(ratingScore))
+            {
+                if (!string.IsNullOrWhiteSpace(ratingLabel))
+                    return $"{ratingScore} ({ratingLabel})";
+                return ratingScore;
+            }
+
+            var ariaScoreNode = doc.DocumentNode.SelectNodes("//span[@aria-label]")?.FirstOrDefault(node =>
+            {
+                var value = node.GetAttributeValue("aria-label", string.Empty);
+                var normalized = value.ToLowerInvariant();
+                return normalized.Contains("score") || normalized.Contains("rating");
+            });
+            var ariaScore = CleanText(ariaScoreNode?.GetAttributeValue("aria-label", null));
+            if (!string.IsNullOrWhiteSpace(ariaScore))
+                return ariaScore;
+
+            var starNode = doc.DocumentNode.SelectSingleNode("//div[@data-testid='rating-stars']")
+                           ?? doc.DocumentNode.SelectSingleNode("//span[contains(@class,'bk-icon-stars')]");
+            var starText = CleanText(starNode?.InnerText);
+            if (!string.IsNullOrWhiteSpace(starText))
+            {
+                var normalizedStarText = NormalizeStarRating(starText);
+                if (!string.IsNullOrWhiteSpace(normalizedStarText))
+                    return normalizedStarText;
+            }
+
+            var ratingNodes = new[]
+            {
+                doc.DocumentNode.SelectSingleNode("//div[@data-testid='review-score']"),
+                doc.DocumentNode.SelectSingleNode("//div[contains(@class,'review-score')]")
+            };
+
+            foreach (var node in ratingNodes)
+            {
+                var text = CleanText(node?.InnerText);
+                if (!string.IsNullOrWhiteSpace(text))
+                    return text;
+            }
+
+            var metaRating = CleanText(doc.DocumentNode.SelectSingleNode("//meta[@itemprop='ratingValue']")?.GetAttributeValue("content", null));
+            if (!string.IsNullOrWhiteSpace(metaRating))
+                return metaRating;
+
+            return null;
+        }
+
+        private string? ExtractPrice(HtmlDocument doc)
+        {
+            var priceSelectors = new[]
+            {
+                "//span[@data-testid='price-and-discounted-price']",
+                "//div[@data-testid='price-and-discounted-price']",
+                "//span[@data-testid='price-for-x-nights']",
+                "//span[@data-testid='price-per-night']",
+                "//span[@data-testid='price-summary']",
+                "//div[contains(@class,'prco-valign-center-helper')]",
+                "//span[contains(@class,'prco-inline-block-maker-helper')]",
+                "//span[contains(@class,'bui-price-display__value')]",
+                "//div[contains(@class,'bui-price-display__value')]"
+            };
+
+            foreach (var selector in priceSelectors)
+            {
+                var node = doc.DocumentNode.SelectSingleNode(selector);
+                var value = CleanText(node?.InnerText);
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value;
+
+                var ariaValue = CleanText(node?.GetAttributeValue("aria-label", null));
+                if (!string.IsNullOrWhiteSpace(ariaValue))
+                    return ariaValue;
+            }
+
+            var metaPrice = CleanText(doc.DocumentNode.SelectSingleNode("//meta[@property='product:price:amount']")?.GetAttributeValue("content", null));
+            if (!string.IsNullOrWhiteSpace(metaPrice))
+            {
+                var currency = CleanText(doc.DocumentNode.SelectSingleNode("//meta[@property='product:price:currency']")?.GetAttributeValue("content", null));
+                if (!string.IsNullOrWhiteSpace(currency))
+                    return $"{metaPrice} {currency}";
+                return metaPrice;
+            }
+
+            return null;
+        }
+
+        private string? CleanText(string? input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return null;
+
+            var value = input;
+            for (var i = 0; i < 3; i++)
+            {
+                var decoded = HtmlEntity.DeEntitize(value);
+                if (decoded == value)
+                    break;
+                value = decoded;
+            }
+
+            value = value.Replace('\u00a0', ' ');
+            value = Regex.Replace(value, "\\s+", " ").Trim();
+
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+
+            return value;
+        }
+
+        private string? NormalizeStarRating(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return null;
+
+            var starCount = text.Count(c => c == '★');
+            if (starCount > 0)
+            {
+                var remainder = text.Replace("★", string.Empty).Trim();
+                var summary = $"{new string('★', starCount)} ({starCount}-star property)";
+                return string.IsNullOrWhiteSpace(remainder) ? summary : $"{summary} – {remainder}";
+            }
+
+            return text;
         }
 
         private class ExtractedItem
