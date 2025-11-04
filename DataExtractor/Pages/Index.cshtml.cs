@@ -86,6 +86,7 @@ namespace DataExtractor.Pages
                     // Occupancy / number of people
                     item.Occupancy = ExtractOccupancy(doc, url);
 
+
                     // Location/address
                     var loc = doc.DocumentNode.SelectSingleNode("//span[@data-testid='address']")?.InnerText
                               ?? doc.DocumentNode.SelectSingleNode("//span[contains(@class,'hp_address_subtitle')]")?.InnerText
@@ -263,7 +264,6 @@ namespace DataExtractor.Pages
                     }
                 }
             }
-
             return null;
         }
 
