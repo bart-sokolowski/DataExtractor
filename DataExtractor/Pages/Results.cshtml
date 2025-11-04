@@ -1,0 +1,118 @@
+@page
+@using System.Linq
+@model DataExtractor.Pages.ResultsModel
+@{
+    ViewData["Title"] = "Extraction Results";
+}
+
+<h2 class="mb-4">Extraction Results</h2>
+
+@if (!ViewData.ModelState.IsValid)
+{
+    <div class="alert alert-warning" role="alert">
+        @foreach (var error in ViewData.ModelState.Values.SelectMany(v => v.Errors))
+        {
+            <div>@error.ErrorMessage</div>
+        }
+    </div>
+}
+
+@if (!Model.Items.Any())
+{
+    <div class="alert alert-info" role="alert">
+        No listings were extracted. Please go back and try submitting different Booking.com URLs.
+    </div>
+}
+else
+{
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <p class="mb-0 text-muted">Showing @Model.Items.Count listing@(Model.Items.Count == 1 ? string.Empty : "s").</p>
+        <a class="btn btn-outline-secondary" asp-page="Index">New extraction</a>
+    </div>
+
+    @foreach (var item in Model.Items)
+    {
+        <div class="card shadow-sm mb-4">
+            <div class="card-body">
+                <div class="row g-4">
+                    <div class="col-lg-8">
+                        <div class="d-flex justify-content-between align-items-start mb-2">
+                            <h4 class="card-title mb-0">@item.Title</h4>
+                            <a href="@item.Url" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline-primary">View listing</a>
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(item.Location))
+                        {
+                            <p class="text-muted mb-2"><strong>Location:</strong> @item.Location</p>
+                        }
+
+                        <div class="d-flex flex-wrap gap-2 mb-3">
+                            @if (!string.IsNullOrWhiteSpace(item.Price))
+                            {
+                                <span class="badge text-bg-success px-3 py-2">Price: @item.Price</span>
+                            }
+                            else
+                            {
+                                <span class="badge text-bg-light text-muted px-3 py-2">Price not available</span>
+                            }
+
+                            @if (!string.IsNullOrWhiteSpace(item.Occupancy))
+                            {
+                                <span class="badge text-bg-secondary px-3 py-2">Occupancy: @item.Occupancy</span>
+                            }
+
+                            @if (!string.IsNullOrWhiteSpace(item.Rating))
+                            {
+                                <span class="badge text-bg-info px-3 py-2">Rating: @item.Rating</span>
+                            }
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(item.Description))
+                        {
+                            <p class="card-text">@item.Description</p>
+                        }
+                    </div>
+
+                    <div class="col-lg-4">
+                        @if (item.HasImages)
+                        {
+                            <div class="main-image mb-3">
+                                <img src="@item.Images[0]" alt="Primary image for @item.Title" class="img-fluid rounded w-100 object-fit-cover" style="max-height: 220px;">
+                            </div>
+
+                            @if (item.Images.Count > 1)
+                            {
+                                <div class="d-flex flex-wrap gap-2">
+                                    @foreach (var image in item.Images.Skip(1).Take(4))
+                                    {
+                                        <img src="@image" alt="Gallery image for @item.Title" class="rounded thumb-image">
+                                    }
+                                </div>
+                            }
+                        }
+                        else
+                        {
+                            <div class="alert alert-secondary" role="alert">
+                                Images not available for this listing.
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@section Styles {
+    <style>
+        .thumb-image {
+            width: 70px;
+            height: 70px;
+            object-fit: cover;
+        }
+
+        .object-fit-cover {
+            object-fit: cover;
+        }
+    </style>
+}
