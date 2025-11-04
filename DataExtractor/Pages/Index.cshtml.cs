@@ -269,7 +269,6 @@ namespace DataExtractor.Pages
                     }
                 }
             }
-
             return null;
         }
 
