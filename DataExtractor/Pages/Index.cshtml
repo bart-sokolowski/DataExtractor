@@ -1,0 +1,27 @@
+﻿@page
+@model DataExtractor.Pages.IndexModel
+@{
+ ViewData["Title"] = "Home page";
+}
+
+<div class="row">
+ <div class="col-md-8">
+ <h2>Booking.com Extractor</h2>
+ <form method="post">
+ <div class="mb-3">
+ <label for="Urls" class="form-label">Enter Booking.com URLs (one per line)</label>
+ <textarea asp-for="Urls" class="form-control" rows="8" placeholder="https://www.booking.com/..."></textarea>
+ <span asp-validation-for="Urls" class="text-danger"></span>
+ </div>
+ <button type="submit" class="btn btn-primary">Extract and Download PDF</button>
+ </form>
+ </div>
+ <div class="col-md-4">
+ <h4>Notes</h4>
+ <p>This will fetch each provided Booking.com URL and attempt to extract the title, main image, price, rating and location, then produce a summary PDF.</p>
+ </div>
+</div>
+
+@section Scripts {
+ <partial name="_ValidationScriptsPartial" />
+}
