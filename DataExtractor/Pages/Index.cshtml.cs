@@ -137,28 +137,42 @@ namespace DataExtractor.Pages
             {
                 container.Page(page =>
                 {
-                    page.Margin(20);
+                    page.Margin(25);
                     page.Size(PageSizes.A4);
                     page.PageColor(Colors.White);
-                    page.DefaultTextStyle(x => x.FontSize(12));
+                    page.DefaultTextStyle(x => x.FontSize(11));
 
-                    page.Header().Text("Booking.com - Extraction Summary").SemiBold().FontSize(18).AlignCenter();
-
-                    page.Content().PaddingVertical(10).Column(col =>
+                    page.Header().PaddingBottom(10).Column(header =>
                     {
+                        header.Item().Text("Booking.com - Extraction Summary").SemiBold().FontSize(20).AlignCenter();
+                        header.Item().AlignCenter().Text(text =>
+                        {
+                            text.Span("Listings exported: ").SemiBold();
+                            text.Span(items.Count.ToString());
+                        });
+                    });
+
+                    page.Content().Padding(15).Column(col =>
+                    {
+                        col.Spacing(15);
+
+                        col.Item().Text(text =>
+                        {
+                            text.Span("Generated on ").SemiBold();
+                            text.Span(DateTime.UtcNow.ToString("dddd, dd MMMM yyyy 'at' HH:mm 'UTC'"));
+                        }).FontColor(Colors.Grey.Darken1);
+
                         foreach (var it in items)
                         {
                             col.Item().Element(c => RenderItem(c, it));
-                            // horizontal separator with padding
-                            col.Item().PaddingVertical(5).LineHorizontal(1).LineColor(Colors.Grey.Lighten1);
                         }
                     });
 
                     page.Footer().AlignCenter().Text(x =>
                     {
-                        x.Span("Generated: ").SemiBold();
+                        x.Span("Data extracted from Booking.com | ");
                         x.Span(DateTime.UtcNow.ToString("u"));
-                    });
+                    }).FontSize(9).FontColor(Colors.Grey.Darken1);
                 });
             });
 
@@ -181,38 +195,88 @@ namespace DataExtractor.Pages
 
         private void RenderItem(IContainer container, ExtractedItem item)
         {
-            container.Padding(5).Column(col =>
-            {
-                col.Item().Row(row =>
+            container
+                .Padding(12)
+                .Border(1)
+                .BorderColor(Colors.Grey.Lighten2)
+                .Background(Colors.Grey.Lighten5)
+                .Column(col =>
                 {
-                    row.RelativeColumn().Column(c2 =>
-                    {
-                        c2.Item().Text(item.Title ?? "").SemiBold().FontSize(14);
-                        if (!string.IsNullOrWhiteSpace(item.Location)) c2.Item().Text(item.Location).FontSize(10).FontColor(Colors.Grey.Darken1);
-                        if (!string.IsNullOrWhiteSpace(item.Price)) c2.Item().Text($"Price: {item.Price}").FontSize(11);
-                        if (!string.IsNullOrWhiteSpace(item.Rating)) c2.Item().Text($"Rating: {item.Rating}").FontSize(11);
-                        if (!string.IsNullOrWhiteSpace(item.Description)) c2.Item().Text(item.Description).FontSize(9).FontColor(Colors.Grey.Darken2);
-                        c2.Item().Text(item.Url).FontSize(9).FontColor(Colors.Blue.Medium);
-                    });
+                    col.Spacing(8);
 
-                    if (item.Images.Count > 0)
+                    col.Item().Row(row =>
                     {
-                        var imgUrl = item.Images[0];
-                        try
+                        row.RelativeColumn().Column(info =>
                         {
-                            using var http = new HttpClient();
-                            var bytes = http.GetByteArrayAsync(imgUrl).GetAwaiter().GetResult();
-                            row.ConstantColumn(120).Height(80).Image(bytes);
-                        }
-                        catch (Exception imgEx)
+                            info.Spacing(4);
+
+                            info.Item().Text(item.Title ?? "").SemiBold().FontSize(15);
+
+                            if (!string.IsNullOrWhiteSpace(item.Location))
+                            {
+                                info.Item().Text(text =>
+                                {
+                                    text.Span("Location: ").SemiBold();
+                                    text.Span(item.Location);
+                                }).FontSize(10).FontColor(Colors.Grey.Darken1);
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(item.Price) || !string.IsNullOrWhiteSpace(item.Rating))
+                            {
+                                info.Item().Grid(grid =>
+                                {
+                                    grid.Columns(2);
+
+                                    if (!string.IsNullOrWhiteSpace(item.Price))
+                                    {
+                                        grid.Item().Text(text =>
+                                        {
+                                            text.Span("Price\n").SemiBold();
+                                            text.Span(item.Price);
+                                        }).FontSize(11);
+                                    }
+
+                                    if (!string.IsNullOrWhiteSpace(item.Rating))
+                                    {
+                                        grid.Item().Text(text =>
+                                        {
+                                            text.Span("Rating\n").SemiBold();
+                                            text.Span(item.Rating);
+                                        }).FontSize(11);
+                                    }
+                                });
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(item.Description))
+                            {
+                                info.Item().Text(item.Description).FontSize(10).FontColor(Colors.Grey.Darken2);
+                            }
+
+                            info.Item().Text(text =>
+                            {
+                                text.Span("Source: ").SemiBold();
+                                text.Span(item.Url).FontColor(Colors.Blue.Medium);
+                            }).FontSize(9);
+                        });
+
+                        if (item.Images.Count > 0)
                         {
-                            // if image loading fails, log and render placeholder
-                            _logger.LogDebug(imgEx, "Failed to load image {ImageUrl}", imgUrl);
-                            row.ConstantColumn(120).Height(80).Placeholder();
+                            var imgUrl = item.Images[0];
+                            try
+                            {
+                                using var http = new HttpClient();
+                                var bytes = http.GetByteArrayAsync(imgUrl).GetAwaiter().GetResult();
+                                row.ConstantColumn(120).Height(90).Image(bytes).FitArea();
+                            }
+                            catch (Exception imgEx)
+                            {
+                                // if image loading fails, log and render placeholder
+                                _logger.LogDebug(imgEx, "Failed to load image {ImageUrl}", imgUrl);
+                                row.ConstantColumn(120).Height(90).Placeholder();
+                            }
                         }
-                    }
+                    });
                 });
-            });
         }
 
         private class ExtractedItem
