@@ -149,9 +149,9 @@ namespace DataExtractor.Pages
 
                         col.Item().Text(text =>
                         {
-                            text.Span("Generated on ").SemiBold();
-                            text.Span(DateTime.UtcNow.ToString("dddd, dd MMMM yyyy 'at' HH:mm 'UTC'"));
-                        }).FontColor(Colors.Grey.Darken1);
+                            text.Span("Generated on ").SemiBold().FontColor(Colors.Grey.Darken1);
+                            text.Span(DateTime.UtcNow.ToString("dddd, dd MMMM yyyy 'at' HH:mm 'UTC'")).FontColor(Colors.Grey.Darken1);
+                        });
 
                         foreach (var it in items)
                         {
@@ -161,9 +161,9 @@ namespace DataExtractor.Pages
 
                     page.Footer().AlignCenter().Text(x =>
                     {
-                        x.Span("Data extracted from Booking.com | ");
-                        x.Span(DateTime.UtcNow.ToString("u"));
-                    }).FontSize(9).FontColor(Colors.Grey.Darken1);
+                        x.Span("Data extracted from Booking.com | ").FontSize(9).FontColor(Colors.Grey.Darken1);
+                        x.Span(DateTime.UtcNow.ToString("u")).FontSize(9).FontColor(Colors.Grey.Darken1);
+                    });
                 });
             });
 
@@ -207,9 +207,9 @@ namespace DataExtractor.Pages
                             {
                                 info.Item().Text(text =>
                                 {
-                                    text.Span("Location: ").SemiBold();
-                                    text.Span(item.Location);
-                                }).FontSize(11).FontColor(Colors.Grey.Darken1);
+                                    text.Span("Location: ").SemiBold().FontSize(11).FontColor(Colors.Grey.Darken1);
+                                    text.Span(item.Location).FontSize(11).FontColor(Colors.Grey.Darken1);
+                                });
                             }
 
                             if (!string.IsNullOrWhiteSpace(item.Price) || !string.IsNullOrWhiteSpace(item.Rating))
@@ -226,9 +226,9 @@ namespace DataExtractor.Pages
                                             .Background(Colors.Green.Lighten4)
                                             .Text(text =>
                                             {
-                                                text.Span("Price: ").SemiBold();
-                                                text.Span(item.Price);
-                                            }).FontSize(11);
+                                                text.Span("Price: ").SemiBold().FontSize(11);
+                                                text.Span(item.Price).FontSize(11);
+                                            });
                                     }
 
                                     if (!string.IsNullOrWhiteSpace(item.Rating))
@@ -239,9 +239,9 @@ namespace DataExtractor.Pages
                                             .Background(Colors.Blue.Lighten4)
                                             .Text(text =>
                                             {
-                                                text.Span("Rating: ").SemiBold();
-                                                text.Span(item.Rating);
-                                            }).FontSize(11);
+                                                text.Span("Rating: ").SemiBold().FontSize(11);
+                                                text.Span(item.Rating).FontSize(11);
+                                            });
                                     }
                                 });
                             }
