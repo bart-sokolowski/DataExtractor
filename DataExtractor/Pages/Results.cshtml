@@ -51,7 +51,6 @@ else
                             {
                                 <p class="text-muted mb-2"><strong>Location:</strong> @item.Location</p>
                             }
-
                         }
 
                         <div class="d-flex flex-wrap gap-2 mb-3">
@@ -146,6 +145,43 @@ else
     </div>
 </div>
 
+@section Styles {
+    <style>
+        .thumb-image {
+            width: 70px;
+            height: 70px;
+            object-fit: cover;
+        }
+
+        .object-fit-cover {
+            object-fit: cover;
+        }
+
+        .image-zoom-trigger {
+            cursor: zoom-in;
+        }
+
+        .map-image {
+            max-height: 220px;
+        }
+
+        .map-container .btn {
+            text-transform: none;
+        }
+
+        #imageZoomModal .modal-content {
+            background: transparent;
+        }
+
+        #imageZoomModal .modal-body {
+            padding: 0;
+        }
+
+        #imageZoomModal img {
+            width: 100%;
+        }
+    </style>
+}
 
 @section Scripts {
     <script>

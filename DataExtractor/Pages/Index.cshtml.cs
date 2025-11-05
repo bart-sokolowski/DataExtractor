@@ -308,61 +308,39 @@ namespace DataExtractor.Pages
 
         private string? ExtractPrice(HtmlDocument doc)
         {
-            var priceSelectors = new[]
+            static IEnumerable<HtmlNode> GetPriceCandidates(HtmlNode cell)
             {
-                "//*[@id='group_recommendation']//div[contains(@class,'prco-text-nowrap-helper')]//div[contains(@class,'prco-inline-block-maker-helper')]//span",
-                "//*[@id='group_recommendation']//div[contains(@class,'prco-text-nowrap-helper')]//span[contains(@class,'prco-valign-middle-helper')]",
-                "//*[@id='group_recommendation']//div[contains(@class,'prco-text-nowrap-helper')]//span",
-                "//*[@id='group_recommendation']//td[contains(@class,'totalPrice-container')]//span[contains(@class,'prco-valign-middle-helper')]",
-                "//*[@id='group_recommendation']//td[contains(@class,'totalPrice-container')]//div[contains(@class,'bui-price-display__value')]//span",
-                "//*[@id='group_recommendation']//td[contains(@class,'totalPrice-container')]//div[contains(@class,'bui-price-display__value')]",
-                "//td[contains(@class,'totalPrice-container')]//span[contains(@class,'prco-valign-middle-helper')]",
-                "//td[contains(@class,'totalPrice-container')]//div[contains(@class,'bui-price-display__value')]//span",
-                "//td[contains(@class,'totalPrice-container')]//div[contains(@class,'bui-price-display__value')]",
-                "//span[@data-testid='price-and-discounted-price']",
-                "//div[@data-testid='price-and-discounted-price']",
-                "//span[@data-testid='price-for-x-nights']",
-                "//span[@data-testid='price-per-night']",
-                "//span[@data-testid='total-price-value']",
-                "//div[@data-testid='price-summary']//span",
-                "//span[@data-testid='price-summary']",
-                "//div[@data-testid='price-summary']",
-                "//div[@data-testid='availability-cta']//*[contains(@class,'price')]",
-                "//span[@data-testid='property-price']",
-                "//div[@data-testid='property-price']",
-                "//div[contains(@class,'hp__hotel-prices')]/span",
-                "//div[contains(@class,'hotel_price_block_wrapper')]//strong",
-                "//div[contains(@class,'bui-price-display__value')]//span",
-                "//div[contains(@class,'prco-valign-center-helper')]",
-                "//span[contains(@class,'prco-inline-block-maker-helper')]",
-                "//span[contains(@class,'bui-price-display__value')]",
-                "//div[contains(@class,'bui-price-display__value')]",
-                "//span[contains(@class,'price')]",
-                "//div[contains(@class,'price')]",
-                "//td[contains(@class,'totalPrice')]//div[contains(@class,'bui-price-display__value')]//span",
-                "//td[contains(@class,'totalPrice')]//div[contains(@class,'prco-valign-middle-helper')]",
-                "//td[contains(@class,'totalPrice')]//span[contains(@class,'prco-inline-block-maker-helper')]"
-            };
+                var explicitValueNodes = cell.SelectNodes(".//div[contains(@class,'bui-price-display__value')]//span" +
+                                                          "|.//div[contains(@class,'bui-price-display__value')]" +
+                                                          "|.//span[contains(@class,'prco-valign-middle-helper')]" +
+                                                          "|.//span[contains(@class,'prco-inline-block-maker-helper')]");
 
-            foreach (var selector in priceSelectors)
+                if (explicitValueNodes != null)
+                    foreach (var node in explicitValueNodes)
+                        yield return node;
+
+                yield return cell;
+            }
+
+            var totalPriceCells = doc.DocumentNode.SelectNodes("//td[contains(concat(' ', normalize-space(@class), ' '), ' totalPrice ')]");
+            if (totalPriceCells != null)
             {
-                var nodes = doc.DocumentNode.SelectNodes(selector);
-                if (nodes == null)
-                    continue;
-
-                foreach (var node in nodes)
+                foreach (var cell in totalPriceCells)
                 {
-                    var value = NormalizePriceText(node?.InnerText);
-                    if (!string.IsNullOrWhiteSpace(value))
-                        return value;
+                    foreach (var node in GetPriceCandidates(cell))
+                    {
+                        var value = NormalizePriceText(node?.InnerText);
+                        if (!string.IsNullOrWhiteSpace(value))
+                            return value;
 
-                    var ariaValue = NormalizePriceText(node?.GetAttributeValue("aria-label", null));
-                    if (!string.IsNullOrWhiteSpace(ariaValue))
-                        return ariaValue;
+                        var ariaValue = NormalizePriceText(node?.GetAttributeValue("aria-label", null));
+                        if (!string.IsNullOrWhiteSpace(ariaValue))
+                            return ariaValue;
 
-                    var dataPrice = NormalizePriceText(node?.GetAttributeValue("data-price", null));
-                    if (!string.IsNullOrWhiteSpace(dataPrice))
-                        return dataPrice;
+                        var dataPrice = NormalizePriceText(node?.GetAttributeValue("data-price", null));
+                        if (!string.IsNullOrWhiteSpace(dataPrice))
+                            return dataPrice;
+                    }
                 }
             }
 
@@ -402,8 +380,116 @@ namespace DataExtractor.Pages
                 }
             }
 
-
             return null;
+        }
+        private List<string> ExtractImages(HtmlDocument doc)
+        {
+            var results = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            void AddImage(string? candidate)
+            {
+                if (string.IsNullOrWhiteSpace(candidate))
+                    return;
+
+
+                var cleaned = NormalizeUrl(candidate, BookingBaseUrl);
+                if (string.IsNullOrWhiteSpace(cleaned))
+                    return;
+
+                if (seen.Add(cleaned))
+                    results.Add(cleaned);
+            }
+
+            var ogImageNodes = doc.DocumentNode.SelectNodes("//meta[@property='og:image']");
+            if (ogImageNodes != null)
+            {
+                foreach (var node in ogImageNodes)
+                {
+                    AddImage(node.GetAttributeValue("content", null));
+                    if (results.Count >= 5)
+                        return results;
+                }
+            }
+
+            var gallerySelectors = new[]
+            {
+                "//img[@data-testid='image']",
+                "//img[@data-testid='hero-image']",
+                "//div[@data-testid='image-gallery']//img",
+                "//img[contains(@class,'hotel_image')]",
+                "//img[contains(@src,'/images/hotel/max')]"
+            };
+
+            foreach (var selector in gallerySelectors)
+            {
+                var nodes = doc.DocumentNode.SelectNodes(selector);
+                if (nodes == null)
+                    continue;
+
+                foreach (var node in nodes)
+                {
+                    var src = node.GetAttributeValue("src", null) ?? node.GetAttributeValue("data-src", null);
+                    AddImage(src);
+                    if (results.Count >= 5)
+                        return results;
+                }
+            }
+
+            if (results.Count == 0)
+            {
+                var fallback = doc.DocumentNode.SelectSingleNode("//img[1]");
+                var src = fallback?.GetAttributeValue("src", null) ?? fallback?.GetAttributeValue("data-src", null);
+                AddImage(src);
+            }
+
+            return results;
+        }
+
+        private string? NormalizeUrl(string? input, string? baseHost = null)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return null;
+
+            var trimmed = input.Trim().Trim('\'', '"');
+            if (string.IsNullOrWhiteSpace(trimmed))
+                return null;
+
+            try
+            {
+                trimmed = HtmlEntity.DeEntitize(trimmed);
+            }
+            catch
+            {
+                // Ignore decoding issues and keep the trimmed value
+            }
+
+            trimmed = trimmed.Replace("\\/", "/").Replace("\\u0026", "&");
+
+            if (trimmed.StartsWith("//"))
+                return $"https:{trimmed}";
+
+            if (trimmed.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                return trimmed;
+
+            if (trimmed.StartsWith("/"))
+            {
+                if (!string.IsNullOrWhiteSpace(baseHost))
+                    return $"{baseHost.TrimEnd('/')}{trimmed}";
+
+                return trimmed;
+            }
+
+            if (!string.IsNullOrWhiteSpace(baseHost))
+            {
+                if (Uri.TryCreate(baseHost, UriKind.Absolute, out var baseUri)
+                    && Uri.TryCreate(baseUri, trimmed, out var absolute))
+                {
+                    return absolute.ToString();
+                }
+            }
+
+            return trimmed;
         }
 
         private string? ExtractOccupancy(HtmlDocument doc, string sourceUrl)
@@ -640,6 +726,7 @@ namespace DataExtractor.Pages
 
             return null;
         }
+
         private List<string> ExtractImages(HtmlDocument doc)
         {
             var results = new List<string>();
@@ -649,7 +736,6 @@ namespace DataExtractor.Pages
             {
                 if (string.IsNullOrWhiteSpace(candidate))
                     return;
-
 
                 var cleaned = NormalizeUrl(candidate, BookingBaseUrl);
                 if (string.IsNullOrWhiteSpace(cleaned))
