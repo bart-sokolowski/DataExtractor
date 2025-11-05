@@ -4,11 +4,14 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.WebUtilities;
 using System;
+using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Linq;
 using System.Collections.Generic;
+using System.Globalization;
 
 namespace DataExtractor.Pages
 {
@@ -52,7 +55,13 @@ namespace DataExtractor.Pages
 
             var items = new List<ExtractedListing>();
 
-            using var http = new HttpClient();
+            using var handler = new HttpClientHandler
+            {
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                UseCookies = true
+            };
+
+            using var http = new HttpClient(handler);
             foreach (var url in urlList)
             {
                 try
@@ -61,6 +70,9 @@ namespace DataExtractor.Pages
                     request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
                     request.Headers.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
                     request.Headers.TryAddWithoutValidation("Accept-Language", "en-GB,en;q=0.9");
+                    request.Headers.Referrer = new Uri(BookingBaseUrl);
+                    request.Headers.AcceptEncoding.Add(new StringWithQualityHeaderValue("gzip"));
+                    request.Headers.AcceptEncoding.Add(new StringWithQualityHeaderValue("deflate"));
 
                     using var response = await http.SendAsync(request);
                     response.EnsureSuccessStatusCode();
@@ -100,9 +112,17 @@ namespace DataExtractor.Pages
                               ?? doc.DocumentNode.SelectSingleNode("//div[contains(@class,'address')]")?.InnerText;
                     item.Location = CleanText(loc);
 
+                    PopulateFromJsonLd(doc, item);
+
                     var mapData = ExtractMapData(doc, item.Location);
-                    item.MapImageUrl = mapData.mapImageUrl;
-                    item.MapLink = mapData.mapLink;
+                    item.MapImageUrl ??= mapData.mapImageUrl;
+                    item.MapLink ??= mapData.mapLink;
+
+                    if (string.IsNullOrWhiteSpace(item.Title) && string.IsNullOrWhiteSpace(item.Description) && string.IsNullOrWhiteSpace(item.Price) && !item.Images.Any())
+                    {
+                        item.Title = "(Details unavailable)";
+                        item.Description = "We couldn't read the listing details from Booking.com.";
+                    }
 
                     items.Add(item);
                 }
@@ -135,14 +155,14 @@ namespace DataExtractor.Pages
             }
         }
 
+        private static string BuildMapsLink(string query) =>
+            $"https://www.google.com/maps/search/?api=1&query={Uri.EscapeDataString(query)}";
+
         private (string? mapImageUrl, string? mapLink) ExtractMapData(HtmlDocument doc, string? locationText)
         {
             string? mapImage = null;
             string? mapLink = null;
             string? coordinateQuery = null;
-
-            static string BuildMapsLink(string query) =>
-                $"https://www.google.com/maps/search/?api=1&query={Uri.EscapeDataString(query)}";
 
             var scriptMapLink = ExtractFromScripts(doc, "googleMapsUrl", "google_maps_url", "googleMapsLink", "google_map_link");
             if (!string.IsNullOrWhiteSpace(scriptMapLink))
@@ -203,8 +223,7 @@ namespace DataExtractor.Pages
                         var style = mapContainer.GetAttributeValue("style", null);
                         if (!string.IsNullOrWhiteSpace(style))
                         {
-                            var match = Regex.Match(style, @"url\(['""]?(?<url>[^'""\)]+)['""]?\)");
-
+                            var match = Regex.Match(style, @"url\\(['\"]?(?<url>[^'\")]+)['\"]?\\)");
                             if (match.Success)
                                 mapImage = NormalizeUrl(match.Groups["url"].Value, BookingBaseUrl);
                         }
@@ -617,6 +636,292 @@ namespace DataExtractor.Pages
             }
 
             return null;
+        }
+
+        private void PopulateFromJsonLd(HtmlDocument doc, ExtractedListing item)
+        {
+            var scriptNodes = doc.DocumentNode.SelectNodes("//script[@type='application/ld+json']");
+            if (scriptNodes == null)
+                return;
+
+            foreach (var script in scriptNodes)
+            {
+                var content = script.InnerText;
+                if (string.IsNullOrWhiteSpace(content))
+                    continue;
+
+                try
+                {
+                    using var jsonDoc = JsonDocument.Parse(content);
+                    ProcessJsonLdElement(jsonDoc.RootElement, item);
+                }
+                catch (JsonException ex)
+                {
+                    _logger.LogDebug(ex, "Failed to parse JSON-LD content for {Url}", item.Url);
+                }
+            }
+        }
+
+        private void ProcessJsonLdElement(JsonElement element, ExtractedListing item)
+        {
+            switch (element.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    ProcessJsonLdObject(element, item);
+                    break;
+                case JsonValueKind.Array:
+                    foreach (var child in element.EnumerateArray())
+                        ProcessJsonLdElement(child, item);
+                    break;
+            }
+        }
+
+        private void ProcessJsonLdObject(JsonElement element, ExtractedListing item)
+        {
+            var type = TryGetString(element, "@type");
+            var normalizedType = type?.ToLowerInvariant();
+
+            if (!string.IsNullOrWhiteSpace(normalizedType))
+            {
+                if (normalizedType.Contains("offer"))
+                {
+                    if (string.IsNullOrWhiteSpace(item.Price))
+                    {
+                        var offerPrice = ExtractPriceFromOffers(element);
+                        if (!string.IsNullOrWhiteSpace(offerPrice))
+                            item.Price = offerPrice;
+                    }
+                }
+                else if (normalizedType.Contains("hotel") || normalizedType.Contains("lodging") || normalizedType.Contains("accommodation") || normalizedType.Contains("place") || normalizedType.Contains("residence") || normalizedType.Contains("product"))
+                {
+                    if (string.IsNullOrWhiteSpace(item.Title))
+                    {
+                        var name = CleanText(TryGetString(element, "name"));
+                        if (!string.IsNullOrWhiteSpace(name))
+                            item.Title = name;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(item.Description))
+                    {
+                        var description = CleanText(TryGetString(element, "description"));
+                        if (!string.IsNullOrWhiteSpace(description))
+                            item.Description = description;
+                    }
+
+                    if (!item.Images.Any() && element.TryGetProperty("image", out var imageElement))
+                        ExtractImagesFromJson(imageElement, item);
+
+                    if (string.IsNullOrWhiteSpace(item.Location) && element.TryGetProperty("address", out var addressElement))
+                    {
+                        var address = ExtractAddressFromJson(addressElement);
+                        if (!string.IsNullOrWhiteSpace(address))
+                            item.Location = address;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(item.Price) && element.TryGetProperty("offers", out var offersElement))
+                    {
+                        var offerPrice = ExtractPriceFromOffers(offersElement);
+                        if (!string.IsNullOrWhiteSpace(offerPrice))
+                            item.Price = offerPrice;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(item.Price) && element.TryGetProperty("priceRange", out var priceRangeElement))
+                    {
+                        var normalized = NormalizePriceText(TryGetString(priceRangeElement));
+                        if (!string.IsNullOrWhiteSpace(normalized))
+                            item.Price = normalized;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(item.Rating) && element.TryGetProperty("aggregateRating", out var ratingElement))
+                    {
+                        var rating = CleanText(TryGetString(ratingElement, "ratingValue"));
+                        if (!string.IsNullOrWhiteSpace(rating))
+                            item.Rating = rating;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(item.MapLink) && element.TryGetProperty("hasMap", out var mapElement))
+                    {
+                        var link = NormalizeUrl(TryGetString(mapElement));
+                        if (!string.IsNullOrWhiteSpace(link))
+                            item.MapLink = link;
+                    }
+                }
+            }
+
+            if (element.TryGetProperty("geo", out var geoElement))
+                ApplyGeoToListing(geoElement, item);
+
+            if (string.IsNullOrWhiteSpace(item.Price) && element.TryGetProperty("offers", out var nestedOffersElement))
+            {
+                var offerPrice = ExtractPriceFromOffers(nestedOffersElement);
+                if (!string.IsNullOrWhiteSpace(offerPrice))
+                    item.Price = offerPrice;
+            }
+
+            foreach (var property in element.EnumerateObject())
+            {
+                ProcessJsonLdElement(property.Value, item);
+            }
+        }
+
+        private void ExtractImagesFromJson(JsonElement element, ExtractedListing item)
+        {
+            switch (element.ValueKind)
+            {
+                case JsonValueKind.String:
+                    AddImageToListing(item, element.GetString());
+                    break;
+                case JsonValueKind.Array:
+                    foreach (var child in element.EnumerateArray())
+                        ExtractImagesFromJson(child, item);
+                    break;
+                case JsonValueKind.Object:
+                    if (element.TryGetProperty("url", out var urlElement))
+                    {
+                        AddImageToListing(item, TryGetString(urlElement));
+                    }
+                    else
+                    {
+                        foreach (var property in element.EnumerateObject())
+                        {
+                            if (property.NameEquals("@type"))
+                                continue;
+
+                            ExtractImagesFromJson(property.Value, item);
+                        }
+                    }
+                    break;
+            }
+        }
+
+        private string? ExtractAddressFromJson(JsonElement element)
+        {
+            if (element.ValueKind == JsonValueKind.String)
+                return CleanText(element.GetString());
+
+            if (element.ValueKind != JsonValueKind.Object)
+                return null;
+
+            var parts = new List<string>();
+
+            void AddPart(string? value)
+            {
+                var cleaned = CleanText(value);
+                if (!string.IsNullOrWhiteSpace(cleaned))
+                    parts.Add(cleaned);
+            }
+
+            AddPart(TryGetString(element, "streetAddress"));
+            AddPart(TryGetString(element, "addressLocality"));
+            AddPart(TryGetString(element, "addressRegion"));
+            AddPart(TryGetString(element, "postalCode"));
+
+            if (element.TryGetProperty("addressCountry", out var countryElement))
+            {
+                string? country = countryElement.ValueKind == JsonValueKind.Object
+                    ? TryGetString(countryElement, "name") ?? TryGetString(countryElement, "@id")
+                    : TryGetString(countryElement);
+                AddPart(country);
+            }
+
+            return parts.Count > 0 ? string.Join(", ", parts) : null;
+        }
+
+        private string? ExtractPriceFromOffers(JsonElement offersElement)
+        {
+            string? result = null;
+
+            void Consider(JsonElement offer)
+            {
+                if (offer.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var nested in offer.EnumerateArray())
+                        Consider(nested);
+                    return;
+                }
+
+                if (offer.ValueKind != JsonValueKind.Object)
+                    return;
+
+                var priceValue = TryGetString(offer, "price")
+                                 ?? TryGetString(offer, "lowPrice")
+                                 ?? TryGetString(offer, "highPrice")
+                                 ?? TryGetString(offer, "amount");
+                if (string.IsNullOrWhiteSpace(priceValue))
+                    return;
+
+                var currency = TryGetString(offer, "priceCurrency") ?? TryGetString(offer, "currency");
+                var candidate = string.IsNullOrWhiteSpace(currency) ? priceValue : $"{currency} {priceValue}";
+                var normalized = NormalizePriceText(candidate);
+                if (!string.IsNullOrWhiteSpace(normalized))
+                    result ??= normalized;
+            }
+
+            switch (offersElement.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    Consider(offersElement);
+                    break;
+                case JsonValueKind.Array:
+                    foreach (var offer in offersElement.EnumerateArray())
+                        Consider(offer);
+                    break;
+            }
+
+            return result;
+        }
+
+        private void ApplyGeoToListing(JsonElement geoElement, ExtractedListing item)
+        {
+            if (geoElement.ValueKind != JsonValueKind.Object)
+                return;
+
+            var latitude = CleanText(TryGetString(geoElement, "latitude") ?? TryGetString(geoElement, "lat"));
+            var longitude = CleanText(TryGetString(geoElement, "longitude") ?? TryGetString(geoElement, "lng") ?? TryGetString(geoElement, "long"));
+
+            if (string.IsNullOrWhiteSpace(latitude) || string.IsNullOrWhiteSpace(longitude))
+                return;
+
+            var coordinates = $"{latitude},{longitude}";
+            item.MapLink ??= BuildMapsLink(coordinates);
+        }
+
+        private string? TryGetString(JsonElement element, string propertyName)
+        {
+            if (element.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!element.TryGetProperty(propertyName, out var property))
+                return null;
+
+            return TryGetString(property);
+        }
+
+        private string? TryGetString(JsonElement element)
+        {
+            return element.ValueKind switch
+            {
+                JsonValueKind.String => element.GetString(),
+                JsonValueKind.Number => element.TryGetDecimal(out var dec)
+                    ? dec.ToString(CultureInfo.InvariantCulture)
+                    : element.GetRawText(),
+                JsonValueKind.True => bool.TrueString,
+                JsonValueKind.False => bool.FalseString,
+                _ => null
+            };
+        }
+
+        private void AddImageToListing(ExtractedListing item, string? candidate)
+        {
+            if (string.IsNullOrWhiteSpace(candidate))
+                return;
+
+            var normalized = NormalizeUrl(candidate, BookingBaseUrl);
+            if (string.IsNullOrWhiteSpace(normalized))
+                return;
+
+            if (!item.Images.Any(existing => string.Equals(existing, normalized, StringComparison.OrdinalIgnoreCase)))
+                item.Images.Add(normalized);
         }
 
         private List<string> ExtractImages(HtmlDocument doc)
