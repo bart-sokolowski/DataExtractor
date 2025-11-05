@@ -203,7 +203,8 @@ namespace DataExtractor.Pages
                         var style = mapContainer.GetAttributeValue("style", null);
                         if (!string.IsNullOrWhiteSpace(style))
                         {
-                            var match = Regex.Match(style, @"url\\(['\"]?(?<url>[^'\")]+)['\"]?\\)");
+                            var match = Regex.Match(style, @"url\(['""]?(?<url>[^'""\)]+)['""]?\)");
+
                             if (match.Success)
                                 mapImage = NormalizeUrl(match.Groups["url"].Value, BookingBaseUrl);
                         }
@@ -381,115 +382,6 @@ namespace DataExtractor.Pages
             }
 
             return null;
-        }
-        private List<string> ExtractImages(HtmlDocument doc)
-        {
-            var results = new List<string>();
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            void AddImage(string? candidate)
-            {
-                if (string.IsNullOrWhiteSpace(candidate))
-                    return;
-
-
-                var cleaned = NormalizeUrl(candidate, BookingBaseUrl);
-                if (string.IsNullOrWhiteSpace(cleaned))
-                    return;
-
-                if (seen.Add(cleaned))
-                    results.Add(cleaned);
-            }
-
-            var ogImageNodes = doc.DocumentNode.SelectNodes("//meta[@property='og:image']");
-            if (ogImageNodes != null)
-            {
-                foreach (var node in ogImageNodes)
-                {
-                    AddImage(node.GetAttributeValue("content", null));
-                    if (results.Count >= 5)
-                        return results;
-                }
-            }
-
-            var gallerySelectors = new[]
-            {
-                "//img[@data-testid='image']",
-                "//img[@data-testid='hero-image']",
-                "//div[@data-testid='image-gallery']//img",
-                "//img[contains(@class,'hotel_image')]",
-                "//img[contains(@src,'/images/hotel/max')]"
-            };
-
-            foreach (var selector in gallerySelectors)
-            {
-                var nodes = doc.DocumentNode.SelectNodes(selector);
-                if (nodes == null)
-                    continue;
-
-                foreach (var node in nodes)
-                {
-                    var src = node.GetAttributeValue("src", null) ?? node.GetAttributeValue("data-src", null);
-                    AddImage(src);
-                    if (results.Count >= 5)
-                        return results;
-                }
-            }
-
-            if (results.Count == 0)
-            {
-                var fallback = doc.DocumentNode.SelectSingleNode("//img[1]");
-                var src = fallback?.GetAttributeValue("src", null) ?? fallback?.GetAttributeValue("data-src", null);
-                AddImage(src);
-            }
-
-            return results;
-        }
-
-        private string? NormalizeUrl(string? input, string? baseHost = null)
-        {
-            if (string.IsNullOrWhiteSpace(input))
-                return null;
-
-            var trimmed = input.Trim().Trim('\'', '"');
-            if (string.IsNullOrWhiteSpace(trimmed))
-                return null;
-
-            try
-            {
-                trimmed = HtmlEntity.DeEntitize(trimmed);
-            }
-            catch
-            {
-                // Ignore decoding issues and keep the trimmed value
-            }
-
-            trimmed = trimmed.Replace("\\/", "/").Replace("\\u0026", "&");
-
-            if (trimmed.StartsWith("//"))
-                return $"https:{trimmed}";
-
-            if (trimmed.StartsWith("http", StringComparison.OrdinalIgnoreCase))
-                return trimmed;
-
-            if (trimmed.StartsWith("/"))
-            {
-                if (!string.IsNullOrWhiteSpace(baseHost))
-                    return $"{baseHost.TrimEnd('/')}{trimmed}";
-
-                return trimmed;
-            }
-
-            if (!string.IsNullOrWhiteSpace(baseHost))
-            {
-                if (Uri.TryCreate(baseHost, UriKind.Absolute, out var baseUri)
-                    && Uri.TryCreate(baseUri, trimmed, out var absolute))
-                {
-                    return absolute.ToString();
-                }
-            }
-
-            return trimmed;
         }
 
         private string? ExtractOccupancy(HtmlDocument doc, string sourceUrl)
