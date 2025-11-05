@@ -1,20 +1,21 @@
+using DataExtractor.Models;
+using HtmlAgilityPack;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using HtmlAgilityPack;
+using Microsoft.AspNetCore.WebUtilities;
+using System;
 using System.Net.Http;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Linq;
-using QuestPDF.Fluent;
-using QuestPDF.Helpers;
-using QuestPDF.Infrastructure;
+using System.Collections.Generic;
 
 namespace DataExtractor.Pages
 {
     public class IndexModel : PageModel
     {
-        private static readonly HttpClient ImageHttpClient = new();
-
         private readonly ILogger<IndexModel> _logger;
+        private const string BookingBaseUrl = "https://www.booking.com";
 
         public IndexModel(ILogger<IndexModel> logger)
         {
@@ -22,43 +23,58 @@ namespace DataExtractor.Pages
         }
 
         [BindProperty]
-        public string? Urls { get; set; }
+        public List<string> UrlEntries { get; set; } = new();
+
+        [TempData]
+        public string? ExtractedItemsJson { get; set; }
 
         public void OnGet()
         {
-
+            EnsureUrlInputs();
         }
 
         public async Task<IActionResult> OnPostAsync()
         {
-            if (string.IsNullOrWhiteSpace(Urls))
-            {
-                ModelState.AddModelError(string.Empty, "Please provide at least one URL.");
-                return Page();
-            }
+            UrlEntries = UrlEntries?
+                .Select(u => u?.Trim() ?? string.Empty)
+                .ToList() ?? new List<string>();
 
-            var urlList = Urls.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(u => u.Trim())
+            var urlList = UrlEntries
                 .Where(u => !string.IsNullOrWhiteSpace(u))
                 .ToList();
 
-            var items = new List<ExtractedItem>();
+            if (!urlList.Any())
+            {
+                ModelState.AddModelError(string.Empty, "Please provide at least one URL.");
+                EnsureUrlInputs();
+                return Page();
+            }
+
+            var items = new List<ExtractedListing>();
 
             using var http = new HttpClient();
             foreach (var url in urlList)
             {
                 try
                 {
-                    var html = await http.GetStringAsync(url);
+                    using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                    request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+                    request.Headers.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
+                    request.Headers.TryAddWithoutValidation("Accept-Language", "en-GB,en;q=0.9");
+
+                    using var response = await http.SendAsync(request);
+                    response.EnsureSuccessStatusCode();
+                    var html = await response.Content.ReadAsStringAsync();
                     var doc = new HtmlDocument();
                     doc.LoadHtml(html);
 
-                    var item = new ExtractedItem { Url = url };
+                    var item = new ExtractedListing { Url = url };
 
                     // Title: try og:title then title tag
                     var ogTitle = doc.DocumentNode.SelectSingleNode("//meta[@property='og:title']")?.GetAttributeValue("content", null);
-                    if (!string.IsNullOrWhiteSpace(ogTitle)) item.Title = CleanText(ogTitle);
-                    else item.Title = CleanText(doc.DocumentNode.SelectSingleNode("//title")?.InnerText) ?? string.Empty;
+                    item.Title = !string.IsNullOrWhiteSpace(ogTitle)
+                        ? CleanText(ogTitle)
+                        : CleanText(doc.DocumentNode.SelectSingleNode("//title")?.InnerText) ?? string.Empty;
 
                     // Description
                     var desc = doc.DocumentNode.SelectSingleNode("//meta[@name='description']")?.GetAttributeValue("content", null)
@@ -66,221 +82,174 @@ namespace DataExtractor.Pages
                                ?? doc.DocumentNode.SelectSingleNode("//div[contains(@class,'hotel_desc')]")?.InnerText;
                     item.Description = CleanText(desc);
 
-                    // Image: og:image
-                    var ogImage = doc.DocumentNode.SelectSingleNode("//meta[@property='og:image']")?.GetAttributeValue("content", null);
-                    if (!string.IsNullOrWhiteSpace(ogImage)) item.Images.Add(ogImage.Trim());
-                    else
-                    {
-                        // try to find first image in gallery
-                        var imgNode = doc.DocumentNode.SelectSingleNode("//img[@data-testid='hero-image']")
-                                     ?? doc.DocumentNode.SelectSingleNode("//img[contains(@class,'hotel_image')]")
-                                     ?? doc.DocumentNode.SelectSingleNode("//img[1]");
-                        var src = imgNode?.GetAttributeValue("src", null) ?? imgNode?.GetAttributeValue("data-src", null);
-                        if (!string.IsNullOrWhiteSpace(src)) item.Images.Add(src);
-                    }
+                    // Images
+                    item.Images.AddRange(ExtractImages(doc));
 
-                    // Rating: try common selectors
+                    // Rating
                     item.Rating = ExtractRating(doc);
 
-                    // Price: try price display class or meta
+                    // Price
                     item.Price = ExtractPrice(doc);
+
+                    // Occupancy / number of people
+                    item.Occupancy = ExtractOccupancy(doc, url);
 
                     // Location/address
                     var loc = doc.DocumentNode.SelectSingleNode("//span[@data-testid='address']")?.InnerText
-                              ?? doc.DocumentNode.SelectSingleNode("//span[contains(@class,'hp_address_subtitle')] ")?.InnerText
+                              ?? doc.DocumentNode.SelectSingleNode("//span[contains(@class,'hp_address_subtitle')]")?.InnerText
                               ?? doc.DocumentNode.SelectSingleNode("//div[contains(@class,'address')]")?.InnerText;
                     item.Location = CleanText(loc);
+
+                    var mapData = ExtractMapData(doc, item.Location);
+                    item.MapImageUrl = mapData.mapImageUrl;
+                    item.MapLink = mapData.mapLink;
 
                     items.Add(item);
                 }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "Failed to extract {Url}", url);
-                    items.Add(new ExtractedItem { Url = url, Title = "(Failed to fetch)", Description = ex.Message });
+                    items.Add(new ExtractedListing
+                    {
+                        Url = url,
+                        Title = "(Failed to fetch)",
+                        Description = ex.Message
+                    });
                 }
             }
 
-            // Generate PDF
-            byte[] pdfBytes;
-            try
-            {
-                pdfBytes = GeneratePdf(items);
-            }
-            catch (Exception ex)
-            {
-                // Log full details so we can diagnose the unnamed exception
-                _logger.LogError(ex, "PDF generation failed");
-
-                // Surface a helpful message to the page (avoid exposing sensitive details in production)
-                ModelState.AddModelError(string.Empty, "PDF generation failed: " + ex.Message + (ex.InnerException != null ? " - " + ex.InnerException.Message : string.Empty));
-                return Page();
-            }
-
-            var fileName = "extracted_booking_summary.pdf";
-            return File(pdfBytes, "application/pdf", fileName);
+            ExtractedItemsJson = JsonSerializer.Serialize(items);
+            return RedirectToPage("Results");
         }
 
-        private byte[] GeneratePdf(List<ExtractedItem> items)
+        private void EnsureUrlInputs()
         {
-            var ms = new MemoryStream();
-
-            var document = Document.Create(container =>
+            if (UrlEntries == null)
             {
-                container.Page(page =>
-                {
-                    page.Margin(25);
-                    page.Size(PageSizes.A4);
-                    page.PageColor(Colors.White);
-                    page.DefaultTextStyle(x => x.FontSize(11));
-
-                    page.Header().PaddingBottom(10).Column(header =>
-                    {
-                        header.Item().Text("Booking.com - Extraction Summary").SemiBold().FontSize(20).AlignCenter();
-                        header.Item().AlignCenter().Text(text =>
-                        {
-                            text.Span("Listings exported: ").SemiBold();
-                            text.Span(items.Count.ToString());
-                        });
-                    });
-
-                    page.Content().Padding(15).Column(col =>
-                    {
-                        col.Spacing(15);
-
-                        col.Item().Text(text =>
-                        {
-                            text.Span("Generated on ").SemiBold().FontColor(Colors.Grey.Darken1);
-                            text.Span(DateTime.UtcNow.ToString("dddd, dd MMMM yyyy 'at' HH:mm 'UTC'")).FontColor(Colors.Grey.Darken1);
-                        });
-
-                        foreach (var it in items)
-                        {
-                            col.Item().Element(c => RenderItem(c, it));
-                        }
-                    });
-
-                    page.Footer().AlignCenter().Text(x =>
-                    {
-                        x.Span("Data extracted from Booking.com | ").FontSize(9).FontColor(Colors.Grey.Darken1);
-                        x.Span(DateTime.UtcNow.ToString("u")).FontSize(9).FontColor(Colors.Grey.Darken1);
-                    });
-                });
-            });
-
-            try
-            {
-                document.GeneratePdf(ms);
-            }
-            catch (Exception ex)
-            {
-                // Log more details and rethrow to be handled upstream
-                _logger.LogError(ex, "Exception while generating PDF: {Message}", ex.Message);
-
-                // Some exceptions may have inner exceptions with clearer messages
-                var details = ex.Message + (ex.InnerException != null ? " | Inner: " + ex.InnerException.Message : string.Empty);
-                throw new InvalidOperationException("PDF generation failed: " + details, ex);
+                UrlEntries = new List<string>();
             }
 
-            return ms.ToArray();
+            if (UrlEntries.Count == 0)
+            {
+                UrlEntries.Add(string.Empty);
+            }
         }
 
-        private void RenderItem(IContainer container, ExtractedItem item)
+        private (string? mapImageUrl, string? mapLink) ExtractMapData(HtmlDocument doc, string? locationText)
         {
-            container
-                .Padding(16)
-                .Border(1)
-                .BorderColor(Colors.Grey.Lighten3)
-                .Background(Colors.White)
-                .Column(col =>
+            string? mapImage = null;
+            string? mapLink = null;
+            string? coordinateQuery = null;
+
+            static string BuildMapsLink(string query) =>
+                $"https://www.google.com/maps/search/?api=1&query={Uri.EscapeDataString(query)}";
+
+            var scriptMapLink = ExtractFromScripts(doc, "googleMapsUrl", "google_maps_url", "googleMapsLink", "google_map_link");
+            if (!string.IsNullOrWhiteSpace(scriptMapLink))
+                mapLink = NormalizeUrl(scriptMapLink);
+
+            var atlasNode = doc.DocumentNode.SelectSingleNode("//*[@data-atlas-latlng]");
+            var atlasCoords = atlasNode?.GetAttributeValue("data-atlas-latlng", null);
+            if (!string.IsNullOrWhiteSpace(atlasCoords) && atlasCoords.Contains(','))
+                coordinateQuery = CleanText(atlasCoords);
+
+            var atlasExplicitLink = NormalizeUrl(atlasNode?.GetAttributeValue("data-google-maps-url", null))
+                                     ?? NormalizeUrl(atlasNode?.GetAttributeValue("data-maps-url", null));
+            if (!string.IsNullOrWhiteSpace(atlasExplicitLink))
+                mapLink ??= atlasExplicitLink;
+
+            var anchorNode = doc.DocumentNode.SelectSingleNode("//a[contains(@data-atlas-latlng,'') or contains(@data-google-maps-url,'') or contains(@class,'show_map') or contains(@class,'js-map-link') or contains(@class,'map_link')]");
+            if (anchorNode != null)
+            {
+                var anchorLink = NormalizeUrl(anchorNode.GetAttributeValue("data-google-maps-url", null))
+                                 ?? NormalizeUrl(anchorNode.GetAttributeValue("href", null));
+                if (!string.IsNullOrWhiteSpace(anchorLink))
+                    mapLink ??= anchorLink;
+
+                if (string.IsNullOrWhiteSpace(coordinateQuery))
                 {
-                    col.Spacing(10);
+                    var anchorCoords = anchorNode.GetAttributeValue("data-atlas-latlng", null);
+                    if (!string.IsNullOrWhiteSpace(anchorCoords) && anchorCoords.Contains(','))
+                        coordinateQuery = CleanText(anchorCoords);
+                }
+            }
 
-                    col.Item().Row(row =>
+            var latMeta = CleanText(doc.DocumentNode.SelectSingleNode("//meta[@property='booking_com:location:latitude']")?.GetAttributeValue("content", null));
+            var lonMeta = CleanText(doc.DocumentNode.SelectSingleNode("//meta[@property='booking_com:location:longitude']")?.GetAttributeValue("content", null));
+            if (!string.IsNullOrWhiteSpace(latMeta) && !string.IsNullOrWhiteSpace(lonMeta))
+            {
+                coordinateQuery ??= $"{latMeta},{lonMeta}";
+            }
+
+            var mapImageNode = doc.DocumentNode.SelectSingleNode("//img[contains(@class,'map_static') or contains(@class,'map-image') or contains(@class,'map_static_image') or contains(@src,'static_map') or contains(@src,'maps.gstatic.com')]");
+            if (mapImageNode != null)
+            {
+                mapImage = NormalizeUrl(mapImageNode.GetAttributeValue("src", null), BookingBaseUrl)
+                           ?? NormalizeUrl(mapImageNode.GetAttributeValue("data-src", null), BookingBaseUrl)
+                           ?? NormalizeUrl(mapImageNode.GetAttributeValue("data-lazy-src", null), BookingBaseUrl);
+            }
+
+            if (string.IsNullOrWhiteSpace(mapImage))
+            {
+                var mapContainer = doc.DocumentNode.SelectSingleNode("//*[contains(@class,'map_static') or contains(@class,'map-container') or contains(@class,'map_static_image') or contains(@data-static-map-url,'http') or contains(@data-atlas-lazy-image,'http')]");
+                if (mapContainer != null)
+                {
+                    mapImage = NormalizeUrl(mapContainer.GetAttributeValue("data-static-map-url", null), BookingBaseUrl)
+                               ?? NormalizeUrl(mapContainer.GetAttributeValue("data-atlas-lazy-image", null), BookingBaseUrl)
+                               ?? NormalizeUrl(mapContainer.GetAttributeValue("data-lazy-url", null), BookingBaseUrl);
+
+                    if (string.IsNullOrWhiteSpace(mapImage))
                     {
-                        row.RelativeColumn().Column(info =>
+                        var style = mapContainer.GetAttributeValue("style", null);
+                        if (!string.IsNullOrWhiteSpace(style))
                         {
-                            info.Spacing(6);
-
-                            info.Item().Text(item.Title ?? "").SemiBold().FontSize(16);
-
-                            if (!string.IsNullOrWhiteSpace(item.Location))
-                            {
-                                info.Item().Text(text =>
-                                {
-                                    text.Span("Location: ").SemiBold().FontSize(11).FontColor(Colors.Grey.Darken1);
-                                    text.Span(item.Location).FontSize(11).FontColor(Colors.Grey.Darken1);
-                                });
-                            }
-
-                            if (!string.IsNullOrWhiteSpace(item.Price) || !string.IsNullOrWhiteSpace(item.Rating))
-                            {
-                                info.Item().Row(tags =>
-                                {
-                                    tags.Spacing(10);
-
-                                    if (!string.IsNullOrWhiteSpace(item.Price))
-                                    {
-                                        tags.AutoItem().PaddingVertical(6).PaddingHorizontal(10)
-                                            .Border(1)
-                                            .BorderColor(Colors.Green.Darken1.WithAlpha(0.3f))
-                                            .Background(Colors.Green.Lighten4)
-                                            .Text(text =>
-                                            {
-                                                text.Span("Price: ").SemiBold().FontSize(11);
-                                                text.Span(item.Price).FontSize(11);
-                                            });
-                                    }
-
-                                    if (!string.IsNullOrWhiteSpace(item.Rating))
-                                    {
-                                        tags.AutoItem().PaddingVertical(6).PaddingHorizontal(10)
-                                            .Border(1)
-                                            .BorderColor(Colors.Blue.Darken1.WithAlpha(0.3f))
-                                            .Background(Colors.Blue.Lighten4)
-                                            .Text(text =>
-                                            {
-                                                text.Span("Rating: ").SemiBold().FontSize(11);
-                                                text.Span(item.Rating).FontSize(11);
-                                            });
-                                    }
-                                });
-                            }
-
-                            if (!string.IsNullOrWhiteSpace(item.Description))
-                            {
-                                info.Item().Text(item.Description).FontSize(10).FontColor(Colors.Grey.Darken2);
-                            }
-
-                            info.Item().Text(text =>
-                            {
-                                text.Span("Source: ").SemiBold().FontSize(9);
-                                text.Span(item.Url).FontColor(Colors.Blue.Medium).FontSize(9);
-                            });
-                        });
-
-                        if (item.Images.Count > 0)
-                        {
-                            var imgUrl = item.Images[0];
-                            try
-                            {
-                                var bytes = ImageHttpClient.GetByteArrayAsync(imgUrl).GetAwaiter().GetResult();
-                                row.ConstantColumn(140).Height(100).Image(bytes).FitArea();
-                            }
-                            catch (Exception imgEx)
-                            {
-                                // if image loading fails, log and render placeholder
-                                _logger.LogDebug(imgEx, "Failed to load image {ImageUrl}", imgUrl);
-                                row.ConstantColumn(140).Height(100).Placeholder();
-                            }
+                            var match = Regex.Match(style, @"url\\(['\"]?(?<url>[^'\")]+)['\"]?\\)");
+                            if (match.Success)
+                                mapImage = NormalizeUrl(match.Groups["url"].Value, BookingBaseUrl);
                         }
-                        else
-                        {
-                            row.ConstantColumn(140).Height(100).Placeholder();
-                        }
-                    });
+                    }
+                }
+            }
 
-                    col.Item().PaddingTop(8).LineHorizontal(1).LineColor(Colors.Grey.Lighten3);
-                });
+            if (string.IsNullOrWhiteSpace(mapImage))
+            {
+                var scriptMapImage = ExtractFromScripts(doc, "staticMapUrl", "static_map_url", "mapStaticImageUrl", "map_image_url", "staticMapImageUrl");
+                if (!string.IsNullOrWhiteSpace(scriptMapImage))
+                    mapImage = NormalizeUrl(scriptMapImage, BookingBaseUrl);
+            }
+
+            if (string.IsNullOrWhiteSpace(mapLink))
+            {
+                var scriptLinkFallback = ExtractFromScripts(doc, "googleMapsUrl", "google_maps_url", "googleMapsLink", "google_map_link", "mapsUrl");
+                if (!string.IsNullOrWhiteSpace(scriptLinkFallback))
+                    mapLink = NormalizeUrl(scriptLinkFallback);
+            }
+
+            if (!string.IsNullOrWhiteSpace(mapLink) && !mapLink.Contains("google.com/maps", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.IsNullOrWhiteSpace(coordinateQuery))
+                {
+                    mapLink = BuildMapsLink(coordinateQuery);
+                }
+                else if (!string.IsNullOrWhiteSpace(locationText))
+                {
+                    mapLink = BuildMapsLink(locationText);
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(mapLink))
+            {
+                if (!string.IsNullOrWhiteSpace(coordinateQuery))
+                {
+                    mapLink = BuildMapsLink(coordinateQuery);
+                }
+                else if (!string.IsNullOrWhiteSpace(locationText))
+                {
+                    mapLink = BuildMapsLink(locationText);
+                }
+            }
+
+            return (mapImage, mapLink);
         }
 
         private string? ExtractRating(HtmlDocument doc)
@@ -339,29 +308,40 @@ namespace DataExtractor.Pages
 
         private string? ExtractPrice(HtmlDocument doc)
         {
-            var priceSelectors = new[]
+            static IEnumerable<HtmlNode> GetPriceCandidates(HtmlNode cell)
             {
-                "//span[@data-testid='price-and-discounted-price']",
-                "//div[@data-testid='price-and-discounted-price']",
-                "//span[@data-testid='price-for-x-nights']",
-                "//span[@data-testid='price-per-night']",
-                "//span[@data-testid='price-summary']",
-                "//div[contains(@class,'prco-valign-center-helper')]",
-                "//span[contains(@class,'prco-inline-block-maker-helper')]",
-                "//span[contains(@class,'bui-price-display__value')]",
-                "//div[contains(@class,'bui-price-display__value')]"
-            };
+                var explicitValueNodes = cell.SelectNodes(".//div[contains(@class,'bui-price-display__value')]//span" +
+                                                          "|.//div[contains(@class,'bui-price-display__value')]" +
+                                                          "|.//span[contains(@class,'prco-valign-middle-helper')]" +
+                                                          "|.//span[contains(@class,'prco-inline-block-maker-helper')]");
 
-            foreach (var selector in priceSelectors)
+                if (explicitValueNodes != null)
+                    foreach (var node in explicitValueNodes)
+                        yield return node;
+
+                yield return cell;
+            }
+
+            var totalPriceCells = doc.DocumentNode.SelectNodes("//td[contains(concat(' ', normalize-space(@class), ' '), ' totalPrice ')]");
+            if (totalPriceCells != null)
             {
-                var node = doc.DocumentNode.SelectSingleNode(selector);
-                var value = CleanText(node?.InnerText);
-                if (!string.IsNullOrWhiteSpace(value))
-                    return value;
+                foreach (var cell in totalPriceCells)
+                {
+                    foreach (var node in GetPriceCandidates(cell))
+                    {
+                        var value = NormalizePriceText(node?.InnerText);
+                        if (!string.IsNullOrWhiteSpace(value))
+                            return value;
 
-                var ariaValue = CleanText(node?.GetAttributeValue("aria-label", null));
-                if (!string.IsNullOrWhiteSpace(ariaValue))
-                    return ariaValue;
+                        var ariaValue = NormalizePriceText(node?.GetAttributeValue("aria-label", null));
+                        if (!string.IsNullOrWhiteSpace(ariaValue))
+                            return ariaValue;
+
+                        var dataPrice = NormalizePriceText(node?.GetAttributeValue("data-price", null));
+                        if (!string.IsNullOrWhiteSpace(dataPrice))
+                            return dataPrice;
+                    }
+                }
             }
 
             var metaPrice = CleanText(doc.DocumentNode.SelectSingleNode("//meta[@property='product:price:amount']")?.GetAttributeValue("content", null));
@@ -373,7 +353,378 @@ namespace DataExtractor.Pages
                 return metaPrice;
             }
 
+            var scriptPrice = ExtractFromScripts(doc, "priceDisplayable", "displayPrice", "priceDisplayValue", "display_price", "priceString");
+            var normalizedScriptPrice = NormalizePriceText(scriptPrice);
+            if (!string.IsNullOrWhiteSpace(normalizedScriptPrice))
+                return normalizedScriptPrice;
+
+            var scriptNodes = doc.DocumentNode.SelectNodes("//script");
+            if (scriptNodes != null)
+            {
+                var amountPattern = new Regex("\"price\"\\s*:\\s*\\{[^}]*\"amount\"\\s*:\\s*(?<amount>[0-9]+(?:\\.[0-9]+)?)\\s*,[^}]*\"currency\"\\s*:\\s*\"(?<currency>[^\"]+)\"", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+                foreach (var script in scriptNodes)
+                {
+                    var text = script.InnerText;
+                    if (string.IsNullOrWhiteSpace(text))
+                        continue;
+
+                    var match = amountPattern.Match(text);
+                    if (match.Success)
+                    {
+                        var amount = match.Groups["amount"].Value;
+                        var currency = match.Groups["currency"].Value;
+                        var combined = NormalizePriceText($"{amount} {currency}");
+                        if (!string.IsNullOrWhiteSpace(combined))
+                            return combined;
+                    }
+                }
+            }
+
             return null;
+        }
+
+        private string? ExtractOccupancy(HtmlDocument doc, string sourceUrl)
+        {
+            var occupancySelectors = new[]
+            {
+                "//div[@data-testid='occupancy-config']",
+                "//span[@data-testid='occupancy-config']",
+                "//div[@data-testid='max-people-message']",
+                "//div[contains(@class,'occupancy-message')]",
+                "//span[contains(@class,'occupancy-message')]",
+                "//div[contains(@class,'c-occupancy-icons__text')]",
+                "//span[contains(@class,'c-occupancy-icons__text')]",
+                "//div[contains(@class,'room-config__occupancy')]",
+                "//span[contains(@class,'room-config__occupancy')]",
+                "//td[contains(@class,'totalPrice')]//div[contains(@class,'bui-price-display__label')]",
+                "//td[contains(@class,'totalPrice-container')]//div[contains(@class,'bui-price-display__label')]"
+            };
+
+            foreach (var selector in occupancySelectors)
+            {
+                var nodes = doc.DocumentNode.SelectNodes(selector);
+                if (nodes == null)
+                    continue;
+
+                foreach (var node in nodes)
+                {
+                    var value = NormalizeOccupancyText(node?.InnerText);
+                    if (!string.IsNullOrWhiteSpace(value))
+                        return value;
+                }
+            }
+
+            var keywordSelectors = new[]
+            {
+                "//span[contains(text(),'Sleeps')]",
+                "//div[contains(text(),'Sleeps')]",
+                "//li[contains(text(),'Sleeps')]",
+                "//span[contains(text(),'guests')]",
+                "//div[contains(text(),'guests')]",
+                "//li[contains(text(),'guests')]"
+            };
+
+            foreach (var selector in keywordSelectors)
+            {
+                var nodes = doc.DocumentNode.SelectNodes(selector);
+                if (nodes == null)
+                    continue;
+
+                foreach (var node in nodes)
+                {
+                    var value = NormalizeOccupancyText(node?.InnerText);
+                    if (!string.IsNullOrWhiteSpace(value))
+                        return value;
+                }
+            }
+
+            var scriptOccupancy = ExtractFromScripts(doc, "occupancyText", "occupancyDisplayValue", "occupancySummary", "maxOccupancy");
+            if (!string.IsNullOrWhiteSpace(scriptOccupancy))
+            {
+                if (int.TryParse(scriptOccupancy, out var count) && count > 0)
+                    return count == 1 ? "Sleeps 1" : $"Sleeps {count}";
+
+                var normalizedScript = NormalizeOccupancyText(scriptOccupancy);
+                if (!string.IsNullOrWhiteSpace(normalizedScript))
+                    return normalizedScript;
+            }
+
+            var scriptNodes = doc.DocumentNode.SelectNodes("//script");
+            if (scriptNodes != null)
+            {
+                var occupancyPattern = new Regex("\"adults\"\\s*:\\s*(?<adults>\\d+)(?:[^\\d]+\"children\"\\s*:\\s*(?<children>\\d+))?", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+                foreach (var script in scriptNodes)
+                {
+                    var text = script.InnerText;
+                    if (string.IsNullOrWhiteSpace(text))
+                        continue;
+
+                    var match = occupancyPattern.Match(text);
+                    if (match.Success)
+                    {
+                        var adults = int.Parse(match.Groups["adults"].Value);
+                        var childrenGroup = match.Groups["children"];
+                        var children = 0;
+                        if (childrenGroup.Success && int.TryParse(childrenGroup.Value, out var parsedChildren))
+                            children = parsedChildren;
+
+                        var total = adults + children;
+                        if (total > 0)
+                            return total == 1 ? "Sleeps 1" : $"Sleeps {total}";
+                    }
+                }
+            }
+
+            var occupancyFromUrl = ExtractOccupancyFromUrl(sourceUrl);
+            if (!string.IsNullOrWhiteSpace(occupancyFromUrl))
+                return occupancyFromUrl;
+
+            return null;
+        }
+
+        private string? NormalizePriceText(string? value)
+        {
+            var cleaned = CleanText(value);
+            if (string.IsNullOrWhiteSpace(cleaned))
+                return null;
+
+            if (!Regex.IsMatch(cleaned, "\\d"))
+                return null;
+
+            if (Regex.IsMatch(cleaned, "we price match", RegexOptions.IgnoreCase))
+                return null;
+
+            cleaned = Regex.Replace(cleaned, "^(price|total|cost)[^\\d£€$]*", string.Empty, RegexOptions.IgnoreCase).Trim();
+            cleaned = Regex.Replace(cleaned, "includes taxes and charges", string.Empty, RegexOptions.IgnoreCase).Trim();
+
+            if (!Regex.IsMatch(cleaned, "\\d"))
+                return null;
+
+            var currencyMatch = Regex.Match(
+                cleaned,
+                @"((?:£|€|$|¥|₩|₹|₽|₺|₪|฿|₫|₱)\s*[\d,.]+)|((?:AUD|CAD|CHF|DKK|EUR|GBP|NOK|NZD|PLN|RON|SEK|USD|AED|SAR|CNY|JPY|INR|KRW|SGD|HKD)\s*[\d,.]+)",
+                RegexOptions.IgnoreCase);
+            if (currencyMatch.Success)
+            {
+                var result = CleanText(currencyMatch.Value);
+                if (!string.IsNullOrWhiteSpace(result))
+                    return result;
+            }
+
+            if (Regex.IsMatch(cleaned, "(night|adult|guest|person|people|room)", RegexOptions.IgnoreCase))
+                return null;
+
+            var numericMatch = Regex.Match(cleaned, "\\d[\\d,.\\s]*");
+            if (numericMatch.Success)
+                return CleanText(numericMatch.Value);
+
+            return null;
+        }
+
+        private string? NormalizeOccupancyText(string? value)
+        {
+            var cleaned = CleanText(value);
+            if (string.IsNullOrWhiteSpace(cleaned))
+                return null;
+
+            if (!Regex.IsMatch(cleaned, "\\d"))
+                return null;
+
+            if (Regex.IsMatch(cleaned, "facilities", RegexOptions.IgnoreCase))
+                return null;
+
+            var normalized = cleaned.ToLowerInvariant();
+            if (!(normalized.Contains("night") || normalized.Contains("guest") || normalized.Contains("adult") || normalized.Contains("person") || normalized.Contains("people") || normalized.Contains("sleep")))
+                return null;
+
+            return cleaned;
+        }
+
+        private string? ExtractOccupancyFromUrl(string sourceUrl)
+        {
+            if (!Uri.TryCreate(sourceUrl, UriKind.Absolute, out var uri))
+                return null;
+
+            var query = QueryHelpers.ParseQuery(uri.Query);
+
+            int ParseCount(string key)
+            {
+                if (query.TryGetValue(key, out var value) && int.TryParse(value, out var parsed) && parsed > 0)
+                    return parsed;
+                return 0;
+            }
+
+            var adults = ParseCount("group_adults");
+            var children = ParseCount("group_children");
+            var rooms = ParseCount("no_rooms");
+
+            int nights = 0;
+            if (query.TryGetValue("checkin", out var checkinValue) && query.TryGetValue("checkout", out var checkoutValue))
+            {
+                if (DateTime.TryParse(checkinValue, out var checkin) && DateTime.TryParse(checkoutValue, out var checkout) && checkout > checkin)
+                {
+                    nights = (int)(checkout - checkin).TotalDays;
+                }
+            }
+
+            var parts = new List<string>();
+            if (nights > 0)
+                parts.Add(nights == 1 ? "1 night" : $"{nights} nights");
+
+            if (adults > 0)
+                parts.Add(adults == 1 ? "1 adult" : $"{adults} adults");
+
+            if (children > 0)
+                parts.Add(children == 1 ? "1 child" : $"{children} children");
+
+            if (rooms > 0)
+                parts.Add(rooms == 1 ? "1 room" : $"{rooms} rooms");
+
+            if (parts.Count == 0)
+                return null;
+
+            return string.Join(", ", parts);
+        }
+
+        private string? ExtractFromScripts(HtmlDocument doc, params string[] keys)
+        {
+            if (keys == null || keys.Length == 0)
+                return null;
+
+            var scriptNodes = doc.DocumentNode.SelectNodes("//script");
+            if (scriptNodes == null)
+                return null;
+
+            foreach (var script in scriptNodes)
+            {
+                var content = script.InnerText;
+                if (string.IsNullOrWhiteSpace(content))
+                    continue;
+
+                foreach (var key in keys)
+                {
+                    var pattern = $"\\\"{Regex.Escape(key)}\\\"\\s*:\\s*\\\"(?<value>.*?)\\\"";
+                    var match = Regex.Match(content, pattern, RegexOptions.IgnoreCase | RegexOptions.Singleline);
+                    if (match.Success)
+                    {
+                        var raw = Regex.Unescape(match.Groups["value"].Value);
+                        var cleaned = CleanText(raw);
+                        if (!string.IsNullOrWhiteSpace(cleaned))
+                            return cleaned;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private List<string> ExtractImages(HtmlDocument doc)
+        {
+            var results = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            void AddImage(string? candidate)
+            {
+                if (string.IsNullOrWhiteSpace(candidate))
+                    return;
+
+                var cleaned = NormalizeUrl(candidate, BookingBaseUrl);
+                if (string.IsNullOrWhiteSpace(cleaned))
+                    return;
+
+                if (seen.Add(cleaned))
+                    results.Add(cleaned);
+            }
+
+            var ogImageNodes = doc.DocumentNode.SelectNodes("//meta[@property='og:image']");
+            if (ogImageNodes != null)
+            {
+                foreach (var node in ogImageNodes)
+                {
+                    AddImage(node.GetAttributeValue("content", null));
+                    if (results.Count >= 5)
+                        return results;
+                }
+            }
+
+            var gallerySelectors = new[]
+            {
+                "//img[@data-testid='image']",
+                "//img[@data-testid='hero-image']",
+                "//div[@data-testid='image-gallery']//img",
+                "//img[contains(@class,'hotel_image')]",
+                "//img[contains(@src,'/images/hotel/max')]"
+            };
+
+            foreach (var selector in gallerySelectors)
+            {
+                var nodes = doc.DocumentNode.SelectNodes(selector);
+                if (nodes == null)
+                    continue;
+
+                foreach (var node in nodes)
+                {
+                    var src = node.GetAttributeValue("src", null) ?? node.GetAttributeValue("data-src", null);
+                    AddImage(src);
+                    if (results.Count >= 5)
+                        return results;
+                }
+            }
+
+            if (results.Count == 0)
+            {
+                var fallback = doc.DocumentNode.SelectSingleNode("//img[1]");
+                var src = fallback?.GetAttributeValue("src", null) ?? fallback?.GetAttributeValue("data-src", null);
+                AddImage(src);
+            }
+
+            return results;
+        }
+
+        private string? NormalizeUrl(string? input, string? baseHost = null)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return null;
+
+            var trimmed = input.Trim().Trim('\'', '"');
+            if (string.IsNullOrWhiteSpace(trimmed))
+                return null;
+
+            try
+            {
+                trimmed = HtmlEntity.DeEntitize(trimmed);
+            }
+            catch
+            {
+                // Ignore decoding issues and keep the trimmed value
+            }
+
+            trimmed = trimmed.Replace("\\/", "/").Replace("\\u0026", "&");
+
+            if (trimmed.StartsWith("//"))
+                return $"https:{trimmed}";
+
+            if (trimmed.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                return trimmed;
+
+            if (trimmed.StartsWith("/"))
+            {
+                if (!string.IsNullOrWhiteSpace(baseHost))
+                    return $"{baseHost.TrimEnd('/')}{trimmed}";
+
+                return trimmed;
+            }
+
+            if (!string.IsNullOrWhiteSpace(baseHost))
+            {
+                if (Uri.TryCreate(baseHost, UriKind.Absolute, out var baseUri)
+                    && Uri.TryCreate(baseUri, trimmed, out var absolute))
+                {
+                    return absolute.ToString();
+                }
+            }
+
+            return trimmed;
         }
 
         private string? CleanText(string? input)
@@ -413,17 +764,6 @@ namespace DataExtractor.Pages
             }
 
             return text;
-        }
-
-        private class ExtractedItem
-        {
-            public string Url { get; set; } = string.Empty;
-            public string? Title { get; set; }
-            public string? Description { get; set; }
-            public List<string> Images { get; set; } = new();
-            public string? Price { get; set; }
-            public string? Rating { get; set; }
-            public string? Location { get; set; }
         }
     }
 }

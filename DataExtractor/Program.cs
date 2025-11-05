@@ -1,5 +1,3 @@
-using QuestPDF.Infrastructure;
-
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
@@ -25,7 +23,5 @@ app.UseAuthorization();
 app.MapStaticAssets();
 app.MapRazorPages()
    .WithStaticAssets();
-
-QuestPDF.Settings.License = LicenseType.Community;
 
 app.Run();
