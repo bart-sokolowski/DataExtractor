@@ -45,7 +45,7 @@
         {
             <div class="d-flex gap-2">
                 <a class="btn btn-outline-primary" asp-page="Results">Open detailed view</a>
-                <a class="btn btn-success" asp-page="Index" asp-page-handler="ExportPdf">Export PDF</a>
+                <button type="button" class="btn btn-success" data-bs-toggle="modal" data-bs-target="#exportPdfModal">Export PDF</button>
             </div>
         }
     </div>
@@ -110,6 +110,11 @@
         </div>
     }
 </section>
+
+@if (Model.Listings.Any())
+{
+    <partial name="_ExportPdfModal" />
+}
 
 @section Scripts {
     <partial name="_ValidationScriptsPartial" />

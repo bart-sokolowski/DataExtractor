@@ -16,8 +16,13 @@ namespace DataExtractor.Pages
 
         public IReadOnlyList<ExtractedListing> Items { get; private set; } = Array.Empty<ExtractedListing>();
 
-        public void OnGet()
+        public string Title { get; private set; } = "Booking.com listings";
+
+        public void OnGet(string? title)
         {
+            if (!string.IsNullOrWhiteSpace(title))
+                Title = title.Trim();
+
             Items = _listingStore.GetAll();
         }
     }

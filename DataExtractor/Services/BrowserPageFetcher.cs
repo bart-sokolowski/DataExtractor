@@ -51,6 +51,21 @@ public sealed class BrowserPageFetcher : IAsyncDisposable
                 // missing details to the user.
             }
 
+            // The room/price table hydrates after the head metadata; give it a
+            // moment so price extraction doesn't race the rendering.
+            try
+            {
+                await page.Locator("[data-testid='price-and-discounted-price'], .bui-price-display__value, td.totalPrice").First.WaitForAsync(new LocatorWaitForOptions
+                {
+                    State = WaitForSelectorState.Attached,
+                    Timeout = 8000
+                });
+            }
+            catch (TimeoutException)
+            {
+                // Not every page shows prices (e.g. no dates in the URL); continue.
+            }
+
             return await page.ContentAsync();
         }
         finally

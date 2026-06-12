@@ -1,0 +1,55 @@
+<div class="modal fade" id="exportPdfModal" tabindex="-1" aria-labelledby="exportPdfModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title" id="exportPdfModalLabel">Export PDF</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <label for="pdfFileName" class="form-label small text-muted">Document name</label>
+                <div class="input-group">
+                    <input type="text" class="form-control" id="pdfFileName"
+                           value="listings-@DateTime.Now.ToString("yyyy-MM-dd")" maxlength="80" />
+                    <span class="input-group-text">.pdf</span>
+                </div>
+                <div class="form-text">Used as the file name and the title on the document.</div>
+            </div>
+            <div class="modal-footer border-0 pt-0">
+                <button type="button" class="btn btn-outline-primary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-success" id="pdfDownloadBtn">Download PDF</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const modalElement = document.getElementById('exportPdfModal');
+        const downloadBtn = document.getElementById('pdfDownloadBtn');
+        const nameInput = document.getElementById('pdfFileName');
+
+        if (!modalElement || !downloadBtn || !nameInput) {
+            return;
+        }
+
+        function download() {
+            const name = nameInput.value.trim();
+            window.location = '@Url.Page("/Index", "ExportPdf")' +
+                (name ? '&fileName=' + encodeURIComponent(name) : '');
+            bootstrap.Modal.getOrCreateInstance(modalElement).hide();
+        }
+
+        downloadBtn.addEventListener('click', download);
+        nameInput.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                download();
+            }
+        });
+
+        modalElement.addEventListener('shown.bs.modal', function () {
+            nameInput.focus();
+            nameInput.select();
+        });
+    });
+</script>

@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using DataExtractor.Models;
 
@@ -9,7 +10,13 @@ namespace DataExtractor.Services;
 /// </summary>
 public sealed class ListingStore
 {
-    private static readonly JsonSerializerOptions SerializerOptions = new() { WriteIndented = true };
+    // Relaxed escaping keeps URLs readable in the file (no & for ampersands);
+    // the file is local data, never served to a browser.
+    private static readonly JsonSerializerOptions SerializerOptions = new()
+    {
+        WriteIndented = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
 
     private readonly object _gate = new();
     private readonly string _filePath;

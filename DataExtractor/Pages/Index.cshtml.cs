@@ -74,15 +74,32 @@ namespace DataExtractor.Pages
             return RedirectToPage("Index", null, "listings");
         }
 
-        public async Task<IActionResult> OnGetExportPdfAsync()
+        public async Task<IActionResult> OnGetExportPdfAsync(string? fileName)
         {
             if (!_listingStore.GetAll().Any())
                 return RedirectToPage("Index");
 
-            var printUrl = $"{Request.Scheme}://{Request.Host}/Print";
+            var documentName = SanitizeFileName(fileName);
+
+            var printUrl = $"{Request.Scheme}://{Request.Host}/Print?title={Uri.EscapeDataString(documentName)}";
             var pdfBytes = await _pageFetcher.RenderPdfAsync(printUrl);
 
-            return File(pdfBytes, "application/pdf", $"listings-{DateTime.Now:yyyy-MM-dd}.pdf");
+            return File(pdfBytes, "application/pdf", $"{documentName}.pdf");
+        }
+
+        private static string SanitizeFileName(string? name)
+        {
+            var fallback = $"listings-{DateTime.Now:yyyy-MM-dd}";
+            if (string.IsNullOrWhiteSpace(name))
+                return fallback;
+
+            var invalid = Path.GetInvalidFileNameChars();
+            var cleaned = new string(name.Trim().Select(c => invalid.Contains(c) ? '-' : c).ToArray()).Trim('.', ' ');
+
+            if (cleaned.Length == 0)
+                return fallback;
+
+            return cleaned.Length > 80 ? cleaned[..80] : cleaned;
         }
 
         private async Task<ExtractedListing> ExtractListingAsync(string url)
@@ -382,6 +399,30 @@ namespace DataExtractor.Pages
                         if (!string.IsNullOrWhiteSpace(dataPrice))
                             return dataPrice;
                     }
+                }
+            }
+
+            // Price blocks that sit outside the classic totalPrice table cells: the
+            // modern availability table and standalone bui-price-display blocks.
+            var priceNodeSelectors = new[]
+            {
+                "//*[@data-testid='price-and-discounted-price']",
+                "//div[contains(@class,'bui-price-display__value')]//span[contains(@class,'prco-valign-middle-helper')]",
+                "//div[contains(@class,'bui-price-display__value')]",
+                "//span[contains(@class,'prco-valign-middle-helper')]"
+            };
+
+            foreach (var selector in priceNodeSelectors)
+            {
+                var nodes = doc.DocumentNode.SelectNodes(selector);
+                if (nodes == null)
+                    continue;
+
+                foreach (var node in nodes)
+                {
+                    var value = NormalizePriceText(node?.InnerText);
+                    if (!string.IsNullOrWhiteSpace(value))
+                        return value;
                 }
             }
 

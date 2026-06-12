@@ -11,7 +11,7 @@
         <a class="btn btn-outline-primary" asp-page="Index">&larr; Back to listings</a>
         @if (Model.Items.Any())
         {
-            <a class="btn btn-success" asp-page="Index" asp-page-handler="ExportPdf">Export PDF</a>
+            <button type="button" class="btn btn-success" data-bs-toggle="modal" data-bs-target="#exportPdfModal">Export PDF</button>
         }
     </div>
 </div>
@@ -127,6 +127,11 @@ else
             </div>
         </div>
     }
+}
+
+@if (Model.Items.Any())
+{
+    <partial name="_ExportPdfModal" />
 }
 
 <div class="modal fade" id="imageZoomModal" tabindex="-1" aria-labelledby="imageZoomModalLabel" aria-hidden="true">

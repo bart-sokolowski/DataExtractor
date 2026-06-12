@@ -8,7 +8,7 @@
 <html lang="en">
 <head>
     <meta charset="utf-8" />
-    <title>Listings export</title>
+    <title>@Model.Title</title>
     <style>
         :root {
             --ink: #1e293b;
@@ -134,7 +134,7 @@
 </head>
 <body>
     <div class="report-header">
-        <h1>Booking.com listings</h1>
+        <h1>@Model.Title</h1>
         <span class="meta">@Model.Items.Count listing@(Model.Items.Count == 1 ? "" : "s") · exported @DateTime.Now.ToString("d MMMM yyyy, HH:mm")</span>
     </div>
 
