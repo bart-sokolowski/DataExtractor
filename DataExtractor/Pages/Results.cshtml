@@ -2,37 +2,32 @@
 @using System.Linq
 @model DataExtractor.Pages.ResultsModel
 @{
-    ViewData["Title"] = "Extraction Results";
+    ViewData["Title"] = "Detailed view";
 }
 
-<h2 class="mb-4">Extraction Results</h2>
-
-@if (!ViewData.ModelState.IsValid)
-{
-    <div class="alert alert-warning" role="alert">
-        @foreach (var error in ViewData.ModelState.Values.SelectMany(v => v.Errors))
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+    <h2 class="section-title mb-0">Detailed view <span class="count-pill">@Model.Items.Count</span></h2>
+    <div class="d-flex gap-2">
+        <a class="btn btn-outline-primary" asp-page="Index">&larr; Back to listings</a>
+        @if (Model.Items.Any())
         {
-            <div>@error.ErrorMessage</div>
+            <a class="btn btn-success" asp-page="Index" asp-page-handler="ExportPdf">Export PDF</a>
         }
     </div>
-}
+</div>
 
 @if (!Model.Items.Any())
 {
-    <div class="alert alert-info" role="alert">
-        No listings were extracted. Please go back and try submitting different Booking.com URLs.
+    <div class="empty-state">
+        <div class="empty-state-icon">🏨</div>
+        <p class="mb-0">No saved listings yet. Go back and extract some Booking.com links first.</p>
     </div>
 }
 else
 {
-    <div class="d-flex justify-content-between align-items-center mb-3">
-        <p class="mb-0 text-muted">Showing @Model.Items.Count listing@(Model.Items.Count == 1 ? string.Empty : "s").</p>
-        <a class="btn btn-outline-secondary" asp-page="Index">New extraction</a>
-    </div>
-
     @foreach (var item in Model.Items)
     {
-        <div class="card shadow-sm mb-4">
+        <div class="card shadow-sm mb-4 detail-card" id="listing-@item.Id">
             <div class="card-body">
                 <div class="row g-4">
                     <div class="col-lg-8">

@@ -3,6 +3,12 @@ var builder = WebApplication.CreateBuilder(args);
 // Add services to the container.
 builder.Services.AddRazorPages();
 
+// Booking.com pages sit behind a JavaScript bot challenge, so they are fetched
+// through headless Chromium rather than HttpClient. Singleton so the browser
+// instance is launched once and reused.
+builder.Services.AddSingleton<DataExtractor.Services.BrowserPageFetcher>();
+builder.Services.AddSingleton<DataExtractor.Services.ListingStore>();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

@@ -4,6 +4,10 @@ namespace DataExtractor.Models;
 
 public class ExtractedListing
 {
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+
+    public DateTimeOffset ExtractedAt { get; set; } = DateTimeOffset.UtcNow;
+
     public string Url { get; set; } = string.Empty;
 
     public string? Title { get; set; }

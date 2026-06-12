@@ -1,16 +1,15 @@
 using DataExtractor.Models;
 using DataExtractor.Services;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using System.Collections.Generic;
 
 namespace DataExtractor.Pages
 {
-    public class ResultsModel : PageModel
+    public class PrintModel : PageModel
     {
         private readonly ListingStore _listingStore;
 
-        public ResultsModel(ListingStore listingStore)
+        public PrintModel(ListingStore listingStore)
         {
             _listingStore = listingStore;
         }

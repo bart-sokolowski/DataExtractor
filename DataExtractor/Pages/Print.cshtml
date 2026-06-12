@@ -1,0 +1,204 @@
+@page
+@using System.Linq
+@model DataExtractor.Pages.PrintModel
+@{
+    Layout = null;
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Listings export</title>
+    <style>
+        :root {
+            --ink: #1e293b;
+            --muted: #64748b;
+            --line: #e2e8f0;
+            --accent: #4f46e5;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            color: var(--ink);
+            margin: 0;
+            font-size: 11pt;
+            line-height: 1.5;
+        }
+
+        .report-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            border-bottom: 3px solid var(--accent);
+            padding-bottom: 10px;
+            margin-bottom: 24px;
+        }
+
+        .report-header h1 {
+            font-size: 18pt;
+            margin: 0;
+            letter-spacing: -0.02em;
+        }
+
+        .report-header .meta {
+            color: var(--muted);
+            font-size: 9pt;
+        }
+
+        .listing {
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 18px 20px;
+            margin-bottom: 22px;
+            page-break-inside: avoid;
+        }
+
+        .listing h2 {
+            font-size: 14pt;
+            margin: 0 0 2px;
+            letter-spacing: -0.01em;
+        }
+
+        .listing .location {
+            color: var(--muted);
+            font-size: 9.5pt;
+            margin: 0 0 10px;
+        }
+
+        .chips {
+            margin: 0 0 12px;
+        }
+
+        .chip {
+            display: inline-block;
+            border-radius: 999px;
+            padding: 2px 12px;
+            font-size: 9pt;
+            font-weight: 600;
+            margin-right: 6px;
+        }
+
+        .chip-price { background: #dcfce7; color: #166534; }
+        .chip-rating { background: #e0e7ff; color: #3730a3; }
+        .chip-occupancy { background: #f1f5f9; color: #475569; }
+
+        .photos {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .photos img.main {
+            width: 46%;
+            height: 150px;
+            object-fit: cover;
+            border-radius: 8px;
+        }
+
+        .photos .thumbs {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: 18%;
+        }
+
+        .photos .thumbs img {
+            width: 100%;
+            height: 71px;
+            object-fit: cover;
+            border-radius: 6px;
+        }
+
+        .description {
+            font-size: 9.5pt;
+            color: #334155;
+            margin: 0 0 10px;
+        }
+
+        .source {
+            font-size: 8.5pt;
+            color: var(--muted);
+            word-break: break-all;
+        }
+
+        .source a { color: var(--accent); text-decoration: none; }
+
+        .empty {
+            color: var(--muted);
+            text-align: center;
+            padding: 60px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="report-header">
+        <h1>Booking.com listings</h1>
+        <span class="meta">@Model.Items.Count listing@(Model.Items.Count == 1 ? "" : "s") · exported @DateTime.Now.ToString("d MMMM yyyy, HH:mm")</span>
+    </div>
+
+    @if (!Model.Items.Any())
+    {
+        <p class="empty">No saved listings.</p>
+    }
+
+    @foreach (var item in Model.Items)
+    {
+        <div class="listing">
+            <h2>@item.Title</h2>
+            @if (!string.IsNullOrWhiteSpace(item.Location))
+            {
+                <p class="location">@item.Location</p>
+            }
+
+            <div class="chips">
+                @if (!string.IsNullOrWhiteSpace(item.Price))
+                {
+                    <span class="chip chip-price">@item.Price</span>
+                }
+                @if (!string.IsNullOrWhiteSpace(item.Rating))
+                {
+                    <span class="chip chip-rating">★ @item.Rating</span>
+                }
+                @if (!string.IsNullOrWhiteSpace(item.Occupancy))
+                {
+                    <span class="chip chip-occupancy">@item.Occupancy</span>
+                }
+            </div>
+
+            @if (item.HasImages)
+            {
+                <div class="photos">
+                    <img class="main" src="@item.Images[0]" alt="@item.Title" />
+                    @if (item.Images.Count > 1)
+                    {
+                        <div class="thumbs">
+                            @foreach (var image in item.Images.Skip(1).Take(2))
+                            {
+                                <img src="@image" alt="" />
+                            }
+                        </div>
+                        @if (item.Images.Count > 3)
+                        {
+                            <div class="thumbs">
+                                @foreach (var image in item.Images.Skip(3).Take(2))
+                                {
+                                    <img src="@image" alt="" />
+                                }
+                            </div>
+                        }
+                    }
+                </div>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(item.Description))
+            {
+                <p class="description">@item.Description</p>
+            }
+
+            <p class="source">Source: <a href="@item.Url">@item.Url</a></p>
+        </div>
+    }
+</body>
+</html>

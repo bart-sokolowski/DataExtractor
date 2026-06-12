@@ -1,4 +1,5 @@
 using DataExtractor.Models;
+using DataExtractor.Services;
 using HtmlAgilityPack;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -18,22 +19,26 @@ namespace DataExtractor.Pages
     public class IndexModel : PageModel
     {
         private readonly ILogger<IndexModel> _logger;
+        private readonly BrowserPageFetcher _pageFetcher;
+        private readonly ListingStore _listingStore;
         private const string BookingBaseUrl = "https://www.booking.com";
 
-        public IndexModel(ILogger<IndexModel> logger)
+        public IndexModel(ILogger<IndexModel> logger, BrowserPageFetcher pageFetcher, ListingStore listingStore)
         {
             _logger = logger;
+            _pageFetcher = pageFetcher;
+            _listingStore = listingStore;
         }
 
         [BindProperty]
         public List<string> UrlEntries { get; set; } = new();
 
-        [TempData]
-        public string? ExtractedItemsJson { get; set; }
+        public IReadOnlyList<ExtractedListing> Listings { get; private set; } = Array.Empty<ExtractedListing>();
 
         public void OnGet()
         {
             EnsureUrlInputs();
+            Listings = _listingStore.GetAll();
         }
 
         public async Task<IActionResult> OnPostAsync()
@@ -44,102 +49,130 @@ namespace DataExtractor.Pages
 
             var urlList = UrlEntries
                 .Where(u => !string.IsNullOrWhiteSpace(u))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
             if (!urlList.Any())
             {
                 ModelState.AddModelError(string.Empty, "Please provide at least one URL.");
                 EnsureUrlInputs();
+                Listings = _listingStore.GetAll();
                 return Page();
             }
 
-            var items = new List<ExtractedListing>();
+            var items = await Task.WhenAll(urlList.Select(ExtractListingAsync));
+            _listingStore.AddOrUpdate(items);
 
-            using var handler = new HttpClientHandler
+            return RedirectToPage("Index", null, "listings");
+        }
+
+        public IActionResult OnPostRemove(string id)
+        {
+            if (!string.IsNullOrWhiteSpace(id))
+                _listingStore.Remove(id);
+
+            return RedirectToPage("Index", null, "listings");
+        }
+
+        public async Task<IActionResult> OnGetExportPdfAsync()
+        {
+            if (!_listingStore.GetAll().Any())
+                return RedirectToPage("Index");
+
+            var printUrl = $"{Request.Scheme}://{Request.Host}/Print";
+            var pdfBytes = await _pageFetcher.RenderPdfAsync(printUrl);
+
+            return File(pdfBytes, "application/pdf", $"listings-{DateTime.Now:yyyy-MM-dd}.pdf");
+        }
+
+        private async Task<ExtractedListing> ExtractListingAsync(string url)
+        {
+            if (!IsSupportedListingUrl(url))
             {
-                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
-                UseCookies = true
-            };
-
-            using var http = new HttpClient(handler);
-            foreach (var url in urlList)
-            {
-                try
+                return new ExtractedListing
                 {
-                    using var request = new HttpRequestMessage(HttpMethod.Get, url);
-                    request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
-                    request.Headers.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
-                    request.Headers.TryAddWithoutValidation("Accept-Language", "en-GB,en;q=0.9");
-                    request.Headers.Referrer = new Uri(BookingBaseUrl);
-                    request.Headers.AcceptEncoding.Add(new StringWithQualityHeaderValue("gzip"));
-                    request.Headers.AcceptEncoding.Add(new StringWithQualityHeaderValue("deflate"));
-
-                    using var response = await http.SendAsync(request);
-                    response.EnsureSuccessStatusCode();
-                    var html = await response.Content.ReadAsStringAsync();
-                    var doc = new HtmlDocument();
-                    doc.LoadHtml(html);
-
-                    var item = new ExtractedListing { Url = url };
-
-                    // Title: try og:title then title tag
-                    var ogTitle = doc.DocumentNode.SelectSingleNode("//meta[@property='og:title']")?.GetAttributeValue("content", null);
-                    item.Title = !string.IsNullOrWhiteSpace(ogTitle)
-                        ? CleanText(ogTitle)
-                        : CleanText(doc.DocumentNode.SelectSingleNode("//title")?.InnerText) ?? string.Empty;
-
-                    // Description
-                    var desc = doc.DocumentNode.SelectSingleNode("//meta[@name='description']")?.GetAttributeValue("content", null)
-                               ?? doc.DocumentNode.SelectSingleNode("//div[@data-testid='property-description']//p")?.InnerText
-                               ?? doc.DocumentNode.SelectSingleNode("//div[contains(@class,'hotel_desc')]")?.InnerText;
-                    item.Description = CleanText(desc);
-
-                    // Images
-                    item.Images.AddRange(ExtractImages(doc));
-
-                    // Rating
-                    item.Rating = ExtractRating(doc);
-
-                    // Price
-                    item.Price = ExtractPrice(doc);
-
-                    // Occupancy / number of people
-                    item.Occupancy = ExtractOccupancy(doc, url);
-
-                    // Location/address
-                    var loc = doc.DocumentNode.SelectSingleNode("//span[@data-testid='address']")?.InnerText
-                              ?? doc.DocumentNode.SelectSingleNode("//span[contains(@class,'hp_address_subtitle')]")?.InnerText
-                              ?? doc.DocumentNode.SelectSingleNode("//div[contains(@class,'address')]")?.InnerText;
-                    item.Location = CleanText(loc);
-
-                    PopulateFromJsonLd(doc, item);
-
-                    var mapData = ExtractMapData(doc, item.Location);
-                    item.MapImageUrl ??= mapData.mapImageUrl;
-                    item.MapLink ??= mapData.mapLink;
-
-                    if (string.IsNullOrWhiteSpace(item.Title) && string.IsNullOrWhiteSpace(item.Description) && string.IsNullOrWhiteSpace(item.Price) && !item.Images.Any())
-                    {
-                        item.Title = "(Details unavailable)";
-                        item.Description = "We couldn't read the listing details from Booking.com.";
-                    }
-
-                    items.Add(item);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed to extract {Url}", url);
-                    items.Add(new ExtractedListing
-                    {
-                        Url = url,
-                        Title = "(Failed to fetch)",
-                        Description = ex.Message
-                    });
-                }
+                    Url = url,
+                    Title = "(Unsupported URL)",
+                    Description = "Only Booking.com listing URLs are supported."
+                };
             }
 
-            ExtractedItemsJson = JsonSerializer.Serialize(items);
-            return RedirectToPage("Results");
+            try
+            {
+                var html = await _pageFetcher.FetchHtmlAsync(url);
+                var doc = new HtmlDocument();
+                doc.LoadHtml(html);
+
+                var item = new ExtractedListing { Url = url };
+
+                // Title: try og:title then title tag
+                var ogTitle = doc.DocumentNode.SelectSingleNode("//meta[@property='og:title']")?.GetAttributeValue("content", null);
+                item.Title = !string.IsNullOrWhiteSpace(ogTitle)
+                    ? CleanText(ogTitle)
+                    : CleanText(doc.DocumentNode.SelectSingleNode("//title")?.InnerText) ?? string.Empty;
+
+                // Description
+                var desc = doc.DocumentNode.SelectSingleNode("//meta[@name='description']")?.GetAttributeValue("content", null)
+                           ?? doc.DocumentNode.SelectSingleNode("//div[@data-testid='property-description']//p")?.InnerText
+                           ?? doc.DocumentNode.SelectSingleNode("//div[contains(@class,'hotel_desc')]")?.InnerText;
+                item.Description = CleanText(desc);
+
+                // Images
+                item.Images.AddRange(ExtractImages(doc));
+
+                // Rating
+                item.Rating = ExtractRating(doc);
+
+                // Price
+                item.Price = ExtractPrice(doc);
+
+                // Occupancy / number of people
+                item.Occupancy = ExtractOccupancy(doc, url);
+
+                // Location/address
+                var loc = doc.DocumentNode.SelectSingleNode("//span[@data-testid='address']")?.InnerText
+                          ?? doc.DocumentNode.SelectSingleNode("//span[contains(@class,'hp_address_subtitle')]")?.InnerText
+                          ?? doc.DocumentNode.SelectSingleNode("//div[contains(@class,'address')]")?.InnerText;
+                item.Location = CleanText(loc);
+
+                PopulateFromJsonLd(doc, item);
+
+                var mapData = ExtractMapData(doc, item.Location);
+                item.MapImageUrl ??= mapData.mapImageUrl;
+                item.MapLink ??= mapData.mapLink;
+
+                if (string.IsNullOrWhiteSpace(item.Title) && string.IsNullOrWhiteSpace(item.Description) && string.IsNullOrWhiteSpace(item.Price) && !item.Images.Any())
+                {
+                    item.Title = "(Details unavailable)";
+                    item.Description = BrowserPageFetcher.LooksLikeBotChallenge(html)
+                        ? "Booking.com blocked the request with a bot challenge. Please try again in a moment."
+                        : "We couldn't read the listing details from Booking.com.";
+                }
+
+                return item;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to extract {Url}", url);
+                return new ExtractedListing
+                {
+                    Url = url,
+                    Title = "(Failed to fetch)",
+                    Description = "We couldn't fetch this listing. Please check the URL and try again."
+                };
+            }
+        }
+
+        private static bool IsSupportedListingUrl(string url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+                return false;
+
+            if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+                return false;
+
+            return uri.Host.Equals("booking.com", StringComparison.OrdinalIgnoreCase)
+                   || uri.Host.EndsWith(".booking.com", StringComparison.OrdinalIgnoreCase);
         }
 
         private void EnsureUrlInputs()
@@ -178,7 +211,7 @@ namespace DataExtractor.Pages
             if (!string.IsNullOrWhiteSpace(atlasExplicitLink))
                 mapLink ??= atlasExplicitLink;
 
-            var anchorNode = doc.DocumentNode.SelectSingleNode("//a[contains(@data-atlas-latlng,'') or contains(@data-google-maps-url,'') or contains(@class,'show_map') or contains(@class,'js-map-link') or contains(@class,'map_link')]");
+            var anchorNode = doc.DocumentNode.SelectSingleNode("//a[@data-atlas-latlng or @data-google-maps-url or contains(@class,'show_map') or contains(@class,'js-map-link') or contains(@class,'map_link')]");
             if (anchorNode != null)
             {
                 var anchorLink = NormalizeUrl(anchorNode.GetAttributeValue("data-google-maps-url", null))
@@ -223,7 +256,7 @@ namespace DataExtractor.Pages
                         var style = mapContainer.GetAttributeValue("style", null);
                         if (!string.IsNullOrWhiteSpace(style))
                         {
-                            var match = Regex.Match(style, @"url\\(['\"]?(?<url>[^'\")]+)['\"]?\\)");
+                            var match = Regex.Match(style, @"url\((['""]?)(?<url>[^'"")]+)['""]?\)");
                             if (match.Success)
                                 mapImage = NormalizeUrl(match.Groups["url"].Value, BookingBaseUrl);
                         }
@@ -245,19 +278,7 @@ namespace DataExtractor.Pages
                     mapLink = NormalizeUrl(scriptLinkFallback);
             }
 
-            if (!string.IsNullOrWhiteSpace(mapLink) && !mapLink.Contains("google.com/maps", StringComparison.OrdinalIgnoreCase))
-            {
-                if (!string.IsNullOrWhiteSpace(coordinateQuery))
-                {
-                    mapLink = BuildMapsLink(coordinateQuery);
-                }
-                else if (!string.IsNullOrWhiteSpace(locationText))
-                {
-                    mapLink = BuildMapsLink(locationText);
-                }
-            }
-
-            if (string.IsNullOrWhiteSpace(mapLink))
+            if (string.IsNullOrWhiteSpace(mapLink) || !mapLink.Contains("google.com/maps", StringComparison.OrdinalIgnoreCase))
             {
                 if (!string.IsNullOrWhiteSpace(coordinateQuery))
                 {
@@ -522,7 +543,7 @@ namespace DataExtractor.Pages
 
             var currencyMatch = Regex.Match(
                 cleaned,
-                @"((?:£|€|$|¥|₩|₹|₽|₺|₪|฿|₫|₱)\s*[\d,.]+)|((?:AUD|CAD|CHF|DKK|EUR|GBP|NOK|NZD|PLN|RON|SEK|USD|AED|SAR|CNY|JPY|INR|KRW|SGD|HKD)\s*[\d,.]+)",
+                @"((?:£|€|\$|¥|₩|₹|₽|₺|₪|฿|₫|₱)\s*[\d,.]+)|((?:AUD|CAD|CHF|DKK|EUR|GBP|NOK|NZD|PLN|RON|SEK|USD|AED|SAR|CNY|JPY|INR|KRW|SGD|HKD)\s*[\d,.]+)",
                 RegexOptions.IgnoreCase);
             if (currencyMatch.Success)
             {

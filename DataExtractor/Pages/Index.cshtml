@@ -1,42 +1,115 @@
-﻿@page
+@page
 @model DataExtractor.Pages.IndexModel
 @{
- ViewData["Title"] = "Home page";
+    ViewData["Title"] = "Listings";
 }
 
-<div class="row">
-    <div class="col-md-8">
-        <h2>Booking.com Extractor</h2>
+<section class="hero-card mb-5">
+    <div class="hero-card-inner">
+        <h1 class="hero-title">Booking.com Extractor</h1>
+        <p class="hero-subtitle">Paste one or more Booking.com listing links and get a clean, comparable summary — title, price, rating, occupancy, location and photos.</p>
+
         <form method="post" novalidate>
-            <div asp-validation-summary="ModelOnly" class="text-danger"></div>
+            <div asp-validation-summary="ModelOnly" class="text-danger mb-2"></div>
             <div id="urlInputs">
                 @for (var i = 0; i < Model.UrlEntries.Count; i++)
                 {
                     <div class="mb-3 url-input">
-                        <label class="form-label" for="UrlEntries_@i">Booking.com URL @(i + 1)</label>
-                        <input asp-for="UrlEntries[i]" class="form-control" type="url" placeholder="https://www.booking.com/..." />
+                        <input asp-for="UrlEntries[i]" class="form-control form-control-lg" type="url" placeholder="https://www.booking.com/hotel/..." aria-label="Booking.com URL @(i + 1)" />
                         <span asp-validation-for="UrlEntries[i]" class="text-danger"></span>
                     </div>
                 }
             </div>
             <template id="urlInputTemplate">
                 <div class="mb-3 url-input">
-                    <label class="form-label" for="UrlEntries___index__">Booking.com URL __displayIndex__</label>
-                    <input class="form-control" type="url" id="UrlEntries___index__" name="UrlEntries[__index__]" placeholder="https://www.booking.com/..." />
+                    <input class="form-control form-control-lg" type="url" id="UrlEntries___index__" name="UrlEntries[__index__]" placeholder="https://www.booking.com/hotel/..." aria-label="Booking.com URL __displayIndex__" />
                     <span class="text-danger field-validation-valid" data-valmsg-for="UrlEntries[__index__]" data-valmsg-replace="true"></span>
                 </div>
             </template>
-            <div class="d-flex flex-wrap gap-2">
-                <button type="button" class="btn btn-outline-secondary" id="addUrlBtn">Add another URL</button>
-                <button type="submit" class="btn btn-primary">Extract and View Results</button>
+            <div class="d-flex flex-wrap gap-2 align-items-center">
+                <button type="submit" class="btn btn-primary btn-lg px-4" id="extractBtn">
+                    <span class="extract-label">Extract listings</span>
+                    <span class="extract-spinner spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                </button>
+                <button type="button" class="btn btn-ghost" id="addUrlBtn">+ Add another URL</button>
+                <span class="text-muted small ms-auto extract-hint d-none">Fetching pages in a headless browser — this can take 10–20 seconds…</span>
             </div>
         </form>
     </div>
-    <div class="col-md-4">
-        <h4>Notes</h4>
-        <p>Enter one Booking.com link per field. Use the <strong>Add another URL</strong> button to include more listings. The extractor gathers the title, pricing details, number of guests, rating, location, and available images before showing everything on the results page.</p>
+</section>
+
+<section id="listings">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+        <h2 class="section-title mb-0">Saved listings <span class="count-pill">@Model.Listings.Count</span></h2>
+        @if (Model.Listings.Any())
+        {
+            <div class="d-flex gap-2">
+                <a class="btn btn-outline-primary" asp-page="Results">Open detailed view</a>
+                <a class="btn btn-success" asp-page="Index" asp-page-handler="ExportPdf">Export PDF</a>
+            </div>
+        }
     </div>
-</div>
+
+    @if (!Model.Listings.Any())
+    {
+        <div class="empty-state">
+            <div class="empty-state-icon">🏨</div>
+            <p class="mb-0">No saved listings yet. Extract your first Booking.com link above — results will be kept here so you can compare them later.</p>
+        </div>
+    }
+    else
+    {
+        <div class="row row-cols-1 row-cols-sm-2 row-cols-lg-3 g-4">
+            @foreach (var item in Model.Listings)
+            {
+                <div class="col">
+                    <div class="listing-card h-100">
+                        <form method="post" asp-page-handler="Remove" class="listing-remove-form"
+                              onsubmit="return confirm('Remove this listing?');">
+                            <input type="hidden" name="id" value="@item.Id" />
+                            <button type="submit" class="listing-remove-btn" title="Remove listing" aria-label="Remove @item.Title">&times;</button>
+                        </form>
+
+                        <a asp-page="Results" asp-fragment="listing-@item.Id" class="listing-card-link">
+                            <div class="listing-thumb">
+                                @if (item.HasImages)
+                                {
+                                    <img src="@item.Images[0]" alt="@item.Title" loading="lazy" />
+                                }
+                                else
+                                {
+                                    <div class="listing-thumb-placeholder">No image</div>
+                                }
+                            </div>
+                            <div class="listing-card-body">
+                                <h3 class="listing-card-title">@item.Title</h3>
+                                @if (!string.IsNullOrWhiteSpace(item.Location))
+                                {
+                                    <p class="listing-card-location">@item.Location</p>
+                                }
+                                <div class="d-flex flex-wrap gap-2 mt-2">
+                                    @if (!string.IsNullOrWhiteSpace(item.Price))
+                                    {
+                                        <span class="chip chip-price">@item.Price</span>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(item.Rating))
+                                    {
+                                        <span class="chip chip-rating">★ @item.Rating</span>
+                                    }
+                                    @if (!string.IsNullOrWhiteSpace(item.Occupancy))
+                                    {
+                                        <span class="chip chip-occupancy">@item.Occupancy</span>
+                                    }
+                                </div>
+                                <p class="listing-card-date">Extracted @item.ExtractedAt.ToLocalTime().ToString("d MMM yyyy, HH:mm")</p>
+                            </div>
+                        </a>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+</section>
 
 @section Scripts {
     <partial name="_ValidationScriptsPartial" />
@@ -65,6 +138,17 @@
                     window.jQuery.validator.unobtrusive.parse(newField);
                 }
             });
+
+            const extractForm = document.querySelector('.hero-card form');
+            const extractBtn = document.getElementById('extractBtn');
+            if (extractForm && extractBtn) {
+                extractForm.addEventListener('submit', function () {
+                    extractBtn.disabled = true;
+                    extractBtn.querySelector('.extract-spinner').classList.remove('d-none');
+                    const hint = document.querySelector('.extract-hint');
+                    if (hint) hint.classList.remove('d-none');
+                });
+            }
         });
     </script>
 }
